@@ -1,0 +1,135 @@
+# Vision API 参考（vision.lua + harness.lua）
+
+`vision.lua` 是布局引擎 + 渲染器，把 mock 里的 Instance 树折算成绝对矩形并产出三类视图；
+`harness.lua` 提供场景驱动与断言设施。两者在 `run_ui.py` 装配后，以下名字都成为
+Lua 全局，场景脚本可直接调用。
+
+---
+
+## 一、三类视图（Snapshot 产出）
+
+`Snapshot(label)` 会向报告输出三块内容：
+
+1. **结构树（■）** —— 每个 GuiObject 一行，含：
+   - `ClassName "Name" Z=ZIndex (x,y) WxH`
+   - 修饰：`[圆角r=N]` `[描边#RRGGBB t=N a=A]` `[bg=#RRGGBB(a=A)]`
+     `[文本="..." Npx #RRGGBB 对齐]` `[组透明 a=A]` `[列表布局 ...]` `[图像=...]`
+   - 布局告警：文本溢出（字号×字宽 > 框宽）、负尺寸等
+2. **ASCII 线框（■）** —— 终端线框图，图例：
+   `░`不透明 `▒`半透 `·`高透 `#`描边 `+`边框 `|/=`边 `-`上下边 `▓`图像
+   边框/描边环**避让文字**（后绘环机制，不会盖住字形）。
+3. **色彩网格（■）** —— 量化到 4bit/通道的颜色字母图例 + 图例表。
+
+---
+
+## 二、harness 全局 API
+
+### 断言
+
+```lua
+check(label, cond, detail)        -- cond 为真则 PASS，否则 FAIL（detail 进报告）
+checkEqual(label, got, want)      -- got == want
+checkNear(label, got, want, tol)  -- math.abs(got-want) <= (tol or 1e-6)
+```
+
+- 全部断言进入 `H.checks`（pass/fail 计数）。
+- 失败时仅记录，不会中断场景；场景末尾调用 `__HARNESS.summary()` 汇总并打印通过率。
+
+### 虚拟时钟 / 快照
+
+```lua
+pump(seconds)        -- 在协程内按 1/60 逐帧让出，让 RenderStepped/Heartbeat 每帧触发；
+                     --   主线程直调时退化成 pumpSeconds。动画要「走完」就用它。
+Snapshot(label)      -- 立即拍一张结构树+ASCII+色彩网格，label 显示在报告里
+vclockNow()          -- 当前虚拟时钟（秒）
+tweenCount()         -- 已创建的补间数量（#M.tweenLog）
+```
+
+> 注意：补间 `Play()` 会**立即应用目标属性**，但 `Completed` 事件**延迟到补间时长之后**
+> 触发。所以「属性值」在 Play 当时就落定；变的是「完成回调」何时跑。想等动画副作用
+> （如 chain 的下一步、UI 显隐切换），用 `pump(时长)` 推进。
+
+### 交互模拟
+
+```lua
+tapUI(inst, opts)    -- 模拟点击：触发该实例的 MouseButton1Click / Activated
+fireUI(inst, eventName, input)  -- 触发任意 Signal（如 "MouseButton1Click"）
+                                 --   input 为可选 InputObject
+mkInput(opts)        -- 构造一个 InputObject（opts: {KeyCode, Position, UserInputType,...}）
+```
+
+### 查询实例树
+
+```lua
+guiRoot()            -- 返回根 ScreenGui（视口挂载点）
+findByName(name)     -- 全树按名字（子串）找，返回 table
+findByText(text, exact)  -- 全树按 TextLabel/TextBox 的文本找（exact=false 时子串）
+findFirstOfClass(className) -- 全树首个指定 ClassName
+countInstances()     -- 当前实例总数
+```
+
+（另有 `*R` 后缀版本直接转发到 `Vision.findByName` 等，行为一致。）
+
+### 健康度 / 收尾
+
+```lua
+dumpWarnings()       -- 返回 mock 警告条数（同时打印内容）；用 print 接返回值
+__HARNESS.summary()  -- 打印「运行汇总」（断言/快照/Tween/警告/错误）并返回
+                     --   (H.checks.fail==0 and #H.errors==0)
+__HARNESS.errors     -- 场景协程报错数组（协程内 error 被捕获进这里，不终止运行）
+__HARNESS.snapshots  -- 已拍快照数
+```
+
+---
+
+## 三、vision.lua 内部 API（进阶 / 二次开发用）
+
+`Vision` 表挂在 `_G.__MOCK` 命名空间，亦作为全局 `Vision` 暴露。
+
+| 成员 | 作用 |
+|------|------|
+| `Vision.viewport = {w=800,h=600}` | 视口像素尺寸（可被 run_ui 的 `--viewport` 覆盖） |
+| `Vision.cell = {w=8,h=16}` | 每个字符格的像素尺寸（ASCII 分辨率） |
+| `Vision.computeLayout()` | 回溯 `_abs` 字段：为每个 GuiObject 算绝对 `(x,y,w,h)`、裁剪框、生效透明度 |
+| `Vision.renderAscii(layout)` | 返回 ASCII 字符串（线框 + 边框避让文字） |
+| `Vision.renderColorGrid(layout, cv)` | 返回色彩网格字符串 + 图例 |
+| `Vision.describeTree(layout)` | 返回结构树字符串（含布局告警） |
+| `Vision.Snapshot(label, opts)` | 内部快照入口（harness 的 `Snapshot` 转发到此） |
+| `Vision.findByName(name)` | 按名查找 |
+| `Vision.findByText(text, exact)` | 按文本查找 |
+| `Vision.findFirstOfClass(className)` | 按类查找 |
+
+### 布局规则（computeLayout 遵守的 Roblox 语义）
+
+- `Size`/`Position` 的 `Scale` 相对**父级完整尺寸**（不受 UIPadding 影响）。
+- `UIPadding` 只收缩 `UIListLayout` 内容区，不改变自身 Size 的 Scale 基准。
+- `ScrollingFrame` 子级坐标减 `CanvasPosition`；默认 `ClipsDescendants=true`。
+- `CanvasGroup.GroupTransparency` 向子树传递（子树实际 alpha = 父组 alpha × 自身 alpha）。
+- 绘制顺序：DFS + 同层按 `(ZIndex, 原始插入序)` 稳定排序（ZIndexBehavior.Sibling 语义）；
+  `ScreenGui` 之间按 `DisplayOrder` 排。
+- `UICorner` 圆角：仅擦除「圆角盒内、且圆心距弧心 > radius」的格。
+- CJK 字符按 1 em、ASCII 按字体的 em 系数（Gotham 0.60 等）度量；
+  网格内每字符占整数格 `adv = max(1, round(charPx/cellW))`。
+
+---
+
+## 四、在场景里的最小可用骨架
+
+```lua
+local ok, Library = pcall(loadstring, game:HttpGet("URL"))
+local win = Library:CreateWindow({ Title = "X", Info = "Y", Icon = "skull" })
+check("CreateWindow 成功", type(win) == "table")
+
+win:Add()
+pump(1.0)                                  -- 入场动画
+local tab = win:AddTab({ Title = "主页" })
+local tg  = tab:AddToggle({ Title = "自动", Default = true })
+Snapshot("初始状态")
+
+local node = findByText("自动")             -- 或通过 guiRoot() 自写 walk
+fireUI(node, "MouseButton1Click")
+pump(0.5)
+check("切换生效", tg:GetValue() == false)
+
+__HARNESS.summary()                         -- 必须，否则报告不汇总
+```

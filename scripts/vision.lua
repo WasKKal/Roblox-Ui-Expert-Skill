@@ -525,6 +525,10 @@ local function putCell(cv, col, row, glyph, color, alpha, kind, noOverwriteText)
     if glyph and sa > 0.02 then
         cell.glyph = glyph
         cell.kind = kind or cell.kind
+        -- 文字格额外记录原始前景色（供 PNG 导出用字形色渲染，而非合成色）
+        if kind == "text" then
+            cell.fgR, cell.fgG, cell.fgB, cell.fgA = color.R or 0, color.G or 0, color.B or 0, sa
+        end
     end
     paintSeq = paintSeq + 1
     cell.seq = paintSeq
@@ -953,6 +957,7 @@ function Vision.Snapshot(label, opts)
     local layout = Vision.computeLayout()
     prepareTexts(layout)
     local ascii, cv = Vision.renderAscii(layout)
+    Vision.lastCanvas = cv          -- 供 PNG 导出（render_png.py）取用
     local cgrid, legend = Vision.renderColorGrid(layout, cv)
     local tree = Vision.describeTree(layout)
 
@@ -991,6 +996,50 @@ function Vision.Snapshot(label, opts)
     end
     print("════════════════════════════════════════════════════════════")
     return layout
+end
+
+-- ---------------------------------------------------------------------------
+-- PNG 导出：把 canvas 序列化为 Python 可解析的字符串
+--   colors: 每格 8 个 hex 字符（RRGGBBAA），按行优先拼接
+--   glyphs: 每格 1 个字符（可能为多字节 UTF-8，Python 侧按 Unicode 解码后索引）
+-- ---------------------------------------------------------------------------
+function Vision.encodeCanvas(cv)
+    cv = cv or Vision.lastCanvas
+    if not cv then return nil end
+    local ct = {}
+    local gt = {}
+    local ft = {}
+    for r = 1, cv.rows do
+        for c = 1, cv.cols do
+            local cell = cv.cells[r][c]
+            local rr = math.floor(clamp(cell.r or 0, 0, 1) * 255 + 0.5)
+            local gg = math.floor(clamp(cell.g or 0, 0, 1) * 255 + 0.5)
+            local bb = math.floor(clamp(cell.b or 0, 0, 1) * 255 + 0.5)
+            local aa = math.floor(clamp(cell.a or 0, 0, 1) * 255 + 0.5)
+            ct[#ct + 1] = string.format("%02X%02X%02X%02X", rr, gg, bb, aa)
+            gt[#gt + 1] = cell.glyph or " "
+            -- 前景色（仅文字格非 0；无前景 alpha=00）
+            local fa = math.floor(clamp(cell.fgA or 0, 0, 1) * 255 + 0.5)
+            if fa > 0 then
+                ft[#ft + 1] = string.format("%02X%02X%02X%02X",
+                    math.floor(clamp(cell.fgR or 0, 0, 1) * 255 + 0.5),
+                    math.floor(clamp(cell.fgG or 0, 0, 1) * 255 + 0.5),
+                    math.floor(clamp(cell.fgB or 0, 0, 1) * 255 + 0.5),
+                    fa)
+            else
+                ft[#ft + 1] = "00000000"
+            end
+        end
+    end
+    return {
+        cols = cv.cols,
+        rows = cv.rows,
+        cellW = Vision.cell.w,
+        cellH = Vision.cell.h,
+        colors = table.concat(ct),
+        glyphs = table.concat(gt),
+        fgs = table.concat(ft),
+    }
 end
 
 -- 便捷查询：按名字/类/文本找对象（返回 inst, rect）

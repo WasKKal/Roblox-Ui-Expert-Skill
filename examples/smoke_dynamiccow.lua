@@ -2,10 +2,17 @@
 -- 冒烟场景：用真实 UI 库 DynamicCowUI.lua 驱动
 -- 目的：验证 Skill 运行时能承载 7000+ 行真实库的完整生命周期
 --   CreateWindow -> Add -> AddTab -> AddSubTitle -> 各类控件 -> 动画 -> 快照
--- 运行方式：
+-- 运行方式（离线可复现：把 Lucide CDN 映射到本地桩，避免依赖外部网络）：
 --   python3 scripts/run_ui.py \
 --     --lib "https://ghfast.top/https://raw.githubusercontent.com/WasKKal/Roblox-DynamicCowUI/main/DynamicCowUI.lua=/workspace/DynamicCowUI.lua" \
+--     --lib "https://gcore.jsdelivr.net/gh/WasKKal/DeltaExecutor-UI-Rebuild@lucide-v6/lucide/init.lua=examples/lucide_stub.lua" \
+--     --lib "https://cdn.jsdelivr.net/gh/WasKKal/DeltaExecutor-UI-Rebuild@lucide-v6/lucide/init.lua=examples/lucide_stub.lua" \
+--     --lib "https://raw.githubusercontent.com/WasKKal/DeltaExecutor-UI-Rebuild@lucide-v6/lucide/init.lua=examples/lucide_stub.lua" \
 --     --scenario examples/smoke_dynamiccow.lua
+--
+-- 说明：Lucide 为图标资源，无头渲染不需要真实像素；桩仅返回确定性 rbxasset:// URL，
+--       库的其余 7000+ 行逻辑（控件工厂/补间/入场状态机/ShowNotify 等）均为真实路径。
+--       CDN 可达时也可删除 Lucide 的 --lib 映射，库会自动下载真实图标。
 -- ==========================================
 
 local CLOUD_URL = "https://ghfast.top/https://raw.githubusercontent.com/WasKKal/Roblox-DynamicCowUI/main/DynamicCowUI.lua"

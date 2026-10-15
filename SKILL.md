@@ -43,7 +43,8 @@ Roblox-Ui-Expert-Skill/
 │   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：跑 Luau 引擎并渲染 PNG/HTML
 │   ├── render_png.py         # 色彩网格 → PNG（逐格放大，粗）
 │   ├── render_hires.py       # 矢量高清渲染：圆角/渐变/描边/旋转/真实字体文本 → 清晰 PNG
-│   └── render_html.py        # DOM+CSS 还原 → 自包含可交互 HTML（悬停探查/缩放/边界框）
+│   ├── render_html.py        # DOM+CSS 还原 → 自包含可交互 HTML（悬停探查/缩放/边界框）
+│   └── preview_server.py     # 在线预览服务：上传 .lua → 真实引擎渲染 → 网页交互
 ├── examples/
 │   ├── demo_ui.lua           # 自包含演示 UI（淡入 / Tab / 各类控件 / 提示）
 │   ├── demo_scenario.lua     # 演示场景：13 条断言 + 3 张快照
@@ -51,6 +52,7 @@ Roblox-Ui-Expert-Skill/
 │   ├── simple_scenario.lua   # 简易场景：13 条断言，用于 luau 渲染验证
 │   ├── rich_ui.lua           # 富特性 UI（渐变/渐隐/描边/旋转/图片/组透明/裁剪）
 │   ├── rich_scenario.lua     # 富特性场景：16 条断言
+│   ├── delta_scenario.lua    # 真实大型库 DeltaUI 渲染自检（12 条断言）
 │   └── smoke_dynamiccow.lua  # 真实库 DynamicCowUI 冒烟（19 条断言全过）
 └── references/
     ├── vision-api.md          # vision.lua + harness 全部 API
@@ -155,6 +157,22 @@ HTML 渲染把每个 GuiObject 映射成绝对定位 `<div>`，用 CSS 还原（
 
 `--style` 可选 `grid` / `hires` / `html` / `both`（三者全出）。
 
+**要「上传自己的 Lua 就渲染」的在线预览（`preview_server.py`）：**
+
+```bash
+python3 scripts/preview_server.py --port 8765
+# 浏览器打开 http://127.0.0.1:8765/
+```
+
+浏览器无法执行 Luau，故由本地服务代跑真实引擎：页面拖入 `.lua` → 服务用
+`run_ui_luau.py`（或 lupa）执行 mock 运行时 + 布局引擎 → 返回绘制列表 → 页面用**同一套
+DOM+CSS 渲染器**渲染。页面提供：引擎切换（luau / lupa）、视口、可选场景脚本、文件多选
+（第一个为主库，其余按文件名映射为 `https://preview.local/<文件名>`）、内置示例一键渲染、
+实时日志（断言/警告/错误）。`?demo=simple|rich|delta` 可直接打开指定示例。
+
+不带场景时服务会用**自动场景**：加载库 → `task.spawn` 执行 → 若返回模块表则自动
+`new()` / `CreateWindow()` 并补几个示例控件；「执行即建 UI」的库（如 DeltaUI）则直接成图。
+
 ## 场景脚本怎么写
 
 场景是普通 Luau，运行在 mock 运行时内，可直接调用库的公开 API：
@@ -199,10 +217,17 @@ __HARNESS.summary`。
 2. `examples/smoke_dynamiccow.lua`（需真实库文件）→ 期望 **19/19 通过、0 错误**
 3. `run_ui_luau.py --scenario examples/simple_scenario.lua`（真实 luau 路径）
    → 期望 **13/13 通过、0 错误**，且生成的 PNG 与 `run_ui.py` 渲染结果一致
+4. `examples/rich_scenario.lua` → **16/16 通过、0 错误**（luau 与 lupa 均需过）
+5. `examples/delta_scenario.lua`（真实大型库 DeltaUI）→ **12/12 通过、0 错误**
+   （luau 与 lupa 均需过；两条路径元素数应一致）
 
-任何改动 `mock_runtime.lua` / `vision.lua` 后，先重跑这三条；新增断言不得让
+任何改动 `mock_runtime.lua` / `vision.lua` 后，先重跑这几条；新增断言不得让
 既有场景失败。注意：两个运行时**共用同一套模块源码**，改动须同时兼容 lupa 与
 真实 luau（避免 `_G.*` 写入、避免同名局部导出如 `Enum = Enum`）。
+
+> 真实库（如 DeltaUI）常会逼出 mock 的保真缺口——例如全局 `unpack`、`TextBounds`、
+> `Stats.PerformanceStats`、未模拟 service 的字段类型等。已按真机语义补齐（见
+> `references/mock-runtime.md`）。
 
 ## 已知边界（重要）
 

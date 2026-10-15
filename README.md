@@ -27,6 +27,12 @@ python3 scripts/run_ui_luau.py \
   --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
   --scenario examples/simple_scenario.lua \
   --out /workspace/ui_render_luau.png
+
+# 4) 要「清晰」的图：矢量高清渲染（1600x1200，可读中文）
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
+  --scenario examples/simple_scenario.lua \
+  --out /workspace/ui_clear.png --style hires --scale 2 --ss 3
 ```
 
 ## 它是怎么工作的
@@ -61,7 +67,8 @@ Roblox-Ui-Expert-Skill/
 │   ├── harness.lua           # 场景驱动 + 断言设施
 │   ├── run_ui.py             # CLI（lupa/Lua 5.5）
 │   ├── run_ui_luau.py        # CLI（真实 Luau 解释器，渲染 PNG）
-│   └── render_png.py         # 色彩网格 → 高清 PNG
+│   ├── render_png.py         # 色彩网格 → PNG（逐格放大，粗）
+│   └── render_hires.py       # 矢量高清渲染（圆角/渐变/描边/真实字体）
 ├── examples/
 │   ├── demo_ui.lua           # 自包含演示 UI
 │   ├── demo_scenario.lua     # 演示场景（13 断言）

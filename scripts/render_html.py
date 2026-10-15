@@ -84,8 +84,10 @@ button.on { background: #2f6feb33; border-color: #2f6feb; color: #79c0ff; }
 """
 
 _JS = r"""
-const V = REPORT.viewport || {w:800,h:600};
-const OPS = REPORT.draws || [];
+let REPORT = (typeof REPORT_DATA !== 'undefined' && REPORT_DATA) ? REPORT_DATA
+             : { viewport: {w:800,h:600}, draws: [] };
+let V = REPORT.viewport || {w:800,h:600};
+let OPS = REPORT.draws || [];
 const vp = document.getElementById('vp');
 
 function c255(x){ return Math.max(0, Math.min(255, Math.round((x||0)*255))); }
@@ -279,7 +281,19 @@ document.getElementById('tbg').onclick  = e=>{
   e.target.classList.toggle('on');
 };
 
-build(); applyZoom();
+// 动态换渲染目标（预览服务器上传后调用）
+function loadReport(rep) {
+  REPORT = rep || { viewport: {w:800,h:600}, draws: [] };
+  V = REPORT.viewport || {w:800,h:600};
+  OPS = REPORT.draws || [];
+  vp.innerHTML = '';
+  hideTip();
+  build();
+  applyZoom();
+}
+window.loadReport = loadReport;
+
+if (typeof REPORT_DATA !== 'undefined' && REPORT_DATA) { build(); applyZoom(); }
 """
 
 
@@ -331,7 +345,7 @@ def render_html(report, out_path, title="Roblox UI"):
         "\n<div class=\"stage\" id=\"stage\"><div class=\"wrap\" id=\"wrap\">"
         "<div class=\"viewport\" id=\"vp\"></div></div></div>\n"
         "<div id=\"tip\"></div>\n"
-        "<script>const REPORT=" + _esc_json(payload) + ";</script>\n"
+        "<script>const REPORT_DATA=" + _esc_json(payload) + ";</script>\n"
         "<script>" + _JS + "</script>\n"
         "</body>\n</html>\n"
     )

@@ -299,6 +299,62 @@ local function applyListLayout(kids, content, layout, presets)
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- AutomaticSize：按内容自适应尺寸（Roblox 的 AutomaticSize X/Y/XY）
+-- 返回内容外延 (extraW, extraH)，即在该对象现有尺寸之外需要额外增加的量。
+--  · 有 UIListLayout 时：沿主轴累加子级尺寸（含间距），而非用子级 Position（列表尚未排布）
+--  · 无列表布局时：取子级包围盒（含 UIPadding 偏移）
+--  · 子级自身若也是自动尺寸，则递归计入
+-- ---------------------------------------------------------------------------
+local function autoExtraOf(inst, availW, availH)
+    local decor, kids = splitChildren(inst)
+    local content = applyPadding({ x = 0, y = 0, w = availW, h = availH }, decor)
+    local function childSize(c)
+        local s = c.Size
+        local cw = (s.X.Scale or 0) * availW + (s.X.Offset or 0)
+        local ch = (s.Y.Scale or 0) * availH + (s.Y.Offset or 0)
+        local an = c.AutomaticSize and enumName(c.AutomaticSize) or "None"
+        if an and an ~= "None" then
+            local ew, eh = autoExtraOf(c, cw, ch)
+            if an:find("X") then cw = cw + ew end
+            if an:find("Y") then ch = ch + eh end
+        end
+        return cw, ch
+    end
+
+    local ll = findDecor(decor, "UIListLayout")
+    if ll then
+        local padPx = (ll.Padding and ll.Padding.Offset) or 0
+        local dir = enumName(ll.FillDirection)
+        local totalW, totalH, n = 0, 0, 0
+        for _, c in ipairs(kids) do
+            local cw, ch = childSize(c)
+            n = n + 1
+            if dir == "Horizontal" then
+                totalW = totalW + cw
+                if ch > totalH then totalH = ch end
+            else
+                totalH = totalH + ch
+                if cw > totalW then totalW = cw end
+            end
+        end
+        local gaps = padPx * math.max(0, n - 1)
+        if dir == "Horizontal" then totalW = totalW + gaps else totalH = totalH + gaps end
+        return totalW + content.x, totalH + content.y
+    end
+
+    local maxX, maxY = 0, 0
+    for _, c in ipairs(kids) do
+        local pos, ap = c.Position, c.AnchorPoint or { X = 0, Y = 0 }
+        local cw, ch = childSize(c)
+        local cx = (pos.X.Scale or 0) * availW + (pos.X.Offset or 0) - (ap.X or 0) * cw
+        local cy = (pos.Y.Scale or 0) * availH + (pos.Y.Offset or 0) - (ap.Y or 0) * ch
+        if cx + cw > maxX then maxX = cx + cw end
+        if cy + ch > maxY then maxY = cy + ch end
+    end
+    return maxX + content.x, maxY + content.y
+end
+
 local function intersectClip(a, b)
     if not a then return b end
     if not b then return a end
@@ -312,8 +368,12 @@ end
 
 -- 递归布局：把结果写入 inst._vrect 并收集绘制条目
 -- parentRect = 父级矩形；preset = UIListLayout 预先算好的矩形（存在则跳过重算）
-local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, preset, groupAlpha)
+local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, preset, groupAlpha, parentVisible)
     local decor, kids = splitChildren(inst)
+
+    -- Visible 沿树向下传递：父级不可见 ⇒ 整棵子树都不渲染（与真实 Roblox 一致）。
+    -- 缺此传播会导致"隐藏页面"的子节点仍被绘制（典型症状：所有页面同时显示）。
+    local selfVisible = (inst.Visible ~= false) and (parentVisible ~= false)
 
     local rect
     if preset then
@@ -330,12 +390,20 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
         x = x - (ap.X or 0) * w
         y = y - (ap.Y or 0) * h
         rect = { x = x, y = y, w = w, h = h }
+        -- AutomaticSize：在指定尺寸之外，按内容外延增大对应轴
+        local an = inst.AutomaticSize and enumName(inst.AutomaticSize) or "None"
+        if an and an ~= "None" then
+            local ew, eh = autoExtraOf(inst, rect.w, rect.h)
+            if an:find("X") then rect.w = rect.w + ew end
+            if an:find("Y") then rect.h = rect.h + eh end
+        end
     end
     inst._vrect = rect
 
     local entry = {
         inst = inst, rect = rect, decor = decor, depth = depth,
-        clip = clip, visible = inst.Visible ~= false, isLastSibling = isLastSibling,
+        clip = clip, visible = selfVisible, selfVisible = (inst.Visible ~= false),
+        isLastSibling = isLastSibling,
         groupAlpha = groupAlpha,
     }
     out[#out + 1] = entry
@@ -373,6 +441,13 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
             local a = c.AnchorPoint or { X = 0, Y = 0 }
             local cw = (s.X.Scale or 0) * rect.w + (s.X.Offset or 0)
             local ch = (s.Y.Scale or 0) * rect.h + (s.Y.Offset or 0)
+            -- 子级若是自动尺寸，其占位需计入内容外延（否则列表会按塌陷后的高度堆叠）
+            local can = c.AutomaticSize and enumName(c.AutomaticSize) or "None"
+            if can and can ~= "None" then
+                local ew, eh = autoExtraOf(c, cw, ch)
+                if can:find("X") then cw = cw + ew end
+                if can:find("Y") then ch = ch + eh end
+            end
             presets[c] = {
                 x = rect.x + (p.X.Scale or 0) * rect.w + (p.X.Offset or 0) - (a.X or 0) * cw,
                 y = rect.y + (p.Y.Scale or 0) * rect.h + (p.Y.Offset or 0) - (a.Y or 0) * ch,
@@ -393,7 +468,7 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
     end)
     for i, e in ipairs(order) do
         layoutObject(e.inst, childBase, childClip, depth + 1, out, i == #order,
-            presets and presets[e.inst] or nil, groupAlpha)
+            presets and presets[e.inst] or nil, groupAlpha, selfVisible)
     end
 end
 
@@ -428,7 +503,7 @@ function Vision.computeLayout()
             return a.idx < b.idx
         end)
         for i, e in ipairs(order) do
-            layoutObject(e.inst, rect, nil, 1, entries, i == #order, nil, 1)
+            layoutObject(e.inst, rect, nil, 1, entries, i == #order, nil, 1, true)
         end
         result[#result + 1] = { gui = g, rect = rect, entries = entries }
     end
@@ -913,7 +988,8 @@ local function describeEntry(sb, entry, prefix, isLast)
     local head = string.format("%s%s%s \"%s\" Z=%d (%.0f,%.0f) %.0fx%.0f",
         prefix, branch, inst.ClassName, tostring(inst.Name), toInt(inst.ZIndex), r.x, r.y, r.w, r.h)
     local notes = {}
-    if not entry.visible then notes[#notes + 1] = "隐藏" end
+    if entry.selfVisible == false then notes[#notes + 1] = "隐藏"
+    elseif not entry.visible then notes[#notes + 1] = "随父隐藏" end
     local bgA = (1 - (inst.BackgroundTransparency or 0)) * (entry.groupAlpha or 1)
     if bgA > 0.03 then
         local grad = findDecor(entry.decor, "UIGradient")
@@ -1066,6 +1142,28 @@ function Vision.encodeCanvas(cv)
         glyphs = table.concat(gt),
         fgs = table.concat(ft),
     }
+end
+
+-- 命中测试：返回该点最上层的可见 GuiObject（沿绘制序倒序，取第一个命中者）。
+-- 与真实 Roblox 的输入命中一致：父级不可见/裁剪外的对象不参与命中。
+function Vision.findByPoint(px, py)
+    local layout = Vision.computeLayout()
+    for gi = #layout, 1, -1 do
+        local entries = layout[gi].entries
+        for ei = #entries, 1, -1 do
+            local e = entries[ei]
+            if e.visible then
+                local r = e.rect
+                if px >= r.x and px < r.x + r.w and py >= r.y and py < r.y + r.h then
+                    local c = e.clip
+                    if not c or (px >= c.x and px < c.x + c.w and py >= c.y and py < c.y + c.h) then
+                        return e.inst, r
+                    end
+                end
+            end
+        end
+    end
+    return nil
 end
 
 -- 便捷查询：按名字/类/文本找对象（返回 inst, rect）

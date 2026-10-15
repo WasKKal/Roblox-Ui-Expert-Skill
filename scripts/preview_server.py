@@ -15,7 +15,7 @@ API：
     GET  /                   预览页面（上传 + 渲染 + 交互 + 日志）
     POST /api/render         multipart：file(主库) / extra(可多个) / scenario(可选) /
                              engine / viewport   → { ok, report, logs, error }
-    GET  /api/demo?name=...  渲染内置示例（simple / rich / delta）
+    GET  /api/demo?name=...  渲染内置示例（simple / rich / anim / delta）
     GET  /api/health
 """
 
@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from render_html import _CSS, _JS, FONT_FACE_CSS  # noqa: E402  复用同一套渲染器
+from render_html import _CSS, _JS, FONT_FACE_CSS, collect_icons  # noqa: E402  复用同一套渲染器
 from run_ui_luau import extract_json  # noqa: E402  复用同一套哨兵 JSON 抽取
 
 app = Flask(__name__)
@@ -116,7 +116,6 @@ __HARNESS.summary()
 
 def _run_engine(engine, workdir, scenario_path, libs, viewport, clicks=None, timeout=300):
     """调用 CLI 跑引擎，返回 (report dict or None, stdout 文本, 返回码)"""
-    out_json = os.path.join(workdir, "_report.json")
     clicks = clicks or []
     if engine == "lupa":
         cmd = [sys.executable, RUN_LUPA, "--scenario", scenario_path,
@@ -136,22 +135,21 @@ def _run_engine(engine, workdir, scenario_path, libs, viewport, clicks=None, tim
         return rep, txt, proc.returncode
 
     cmd = [sys.executable, RUN_LUAU, "--scenario", scenario_path,
-           "--viewport", viewport, "--max-seconds", "40",
-           "--style", "grid", "--out", os.path.join(workdir, "_grid.png"),
-           "--dump-json", out_json]
+           "--viewport", viewport, "--max-seconds", "40", "--style", "none"]
     for url, path in libs:
         cmd += ["--lib", "%s=%s" % (url, path)]
     for cx, cy in clicks:
         cmd += ["--click", "%s,%s" % (cx, cy)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    txt = (proc.stdout or "") + (proc.stderr or "")
     rep = None
-    if os.path.exists(out_json):
+    chunk = extract_json(txt)          # 引擎把报告以哨兵 JSON 打在 stdout，无需落盘
+    if chunk:
         try:
-            with open(out_json, "r", encoding="utf-8") as f:
-                rep = json.load(f)
+            rep = json.loads(chunk)
         except Exception:
             rep = None
-    return rep, (proc.stdout or "") + (proc.stderr or ""), proc.returncode
+    return rep, txt, proc.returncode
 
 
 def _clean_logs(text):
@@ -200,7 +198,9 @@ def _render(main_bytes, main_name, scenario_text, engine, viewport, extra_files,
         if rep is None:
             return {"ok": False, "error": "引擎未产出绘制列表（见日志）",
                     "logs": _clean_logs(logs), "exit": code}
-        return {"ok": True, "report": rep, "logs": _clean_logs(logs), "exit": code}
+        icons, ref2name = collect_icons(rep)
+        return {"ok": True, "report": rep, "icons": icons, "ref2name": ref2name,
+                "logs": _clean_logs(logs), "exit": code}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "执行超时", "logs": ""}
     except Exception as e:  # noqa: BLE001
@@ -299,6 +299,7 @@ def api_demo():
     table = {
         "simple": ("simple_ui.lua", "simple_scenario.lua"),
         "rich": ("rich_ui.lua", "rich_scenario.lua"),
+        "anim": ("anim_ui.lua", "anim_scenario.lua"),
     }
     if name == "delta":
         candidate = "/root/uploads/1791642772656330982-DeltaUI.lua.txt"
@@ -418,6 +419,7 @@ body { height: 100vh; }
     <div class="row">
       <button onclick="demo('simple')">简易 UI</button>
       <button onclick="demo('rich')">富特性</button>
+      <button onclick="demo('anim')">动效</button>
       <button onclick="demo('delta')">DeltaUI</button>
     </div>
 
@@ -474,7 +476,7 @@ async function render(payload, isForm){
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||'渲染失败'))); return; }
     SID = j.sessionId || null; clicks = [];
-    window.loadReport(j.report); drawMarkers();
+    window.loadReport(j.report, j.icons, j.ref2name); drawMarkers();
     $('hstat').textContent = '元素 ' + (j.report.draws||[]).length + ' · 断言 '
       + (j.report.checks?(j.report.checks.pass+'/'+((j.report.checks.pass||0)+(j.report.checks.fail||0))):'-')
       + ' · 错误 ' + ((j.report.errors||[]).length)
@@ -514,7 +516,7 @@ document.getElementById('vp').addEventListener('click', async e=>{
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }
     clicks.push({x: x, y: y});
-    window.loadReport(j.report); drawMarkers();
+    window.loadReport(j.report, j.icons, j.ref2name); drawMarkers();
     $('hstat').textContent = '元素 ' + (j.report.draws||[]).length + ' · 已点击 ' + clicks.length + ' 次';
   } catch(err) { setLogs('[ERROR] ' + err); }
   finally { busy(false); }
@@ -531,7 +533,7 @@ document.getElementById('treset').onclick = async ()=>{
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }
     clicks = [];
-    window.loadReport(j.report); drawMarkers();
+    window.loadReport(j.report, j.icons, j.ref2name); drawMarkers();
     $('hstat').textContent = '已重置交互 · 元素 ' + (j.report.draws||[]).length;
   } catch(err){ setLogs('[ERROR] ' + err); }
   finally { busy(false); }
@@ -558,7 +560,7 @@ async function demo(name){
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }
     SID = j.sessionId || null; clicks = [];
-    window.loadReport(j.report); drawMarkers();
+    window.loadReport(j.report, j.icons, j.ref2name); drawMarkers();
     $('hstat').textContent = '示例 ' + name + ' · 元素 ' + (j.report.draws||[]).length
       + (SID ? ' · 可点击' : '');
   } catch(e){ setLogs('[ERROR] ' + e); }
@@ -566,7 +568,7 @@ async function demo(name){
 }
 window.demo = demo;
 
-// 首屏自动渲染：?demo=simple|rich|delta 或默认 rich
+// 首屏自动渲染：?demo=simple|rich|anim|delta 或默认 rich
 const q = new URLSearchParams(location.search);
 demo(q.get('demo') || 'rich');
 </script>

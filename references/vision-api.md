@@ -136,7 +136,14 @@ __HARNESS.summary()                         -- 必须，否则报告不汇总
 
 ---
 
-## 五、矢量绘制列表 `Vision.buildDrawList()`
+## 五、命中测试 `Vision.findByPoint(x, y)`
+
+返回该点**最上层的可见 GuiObject**（沿绘制序倒序找第一个命中者，尊重 `Visible` 传播与裁剪矩形）。
+配套 harness 全局 `hitTest(x, y)`。用于交互式点击：`local t = hitTest(x,y); if t then tapUI(t) end`。
+
+---
+
+## 六、矢量绘制列表 `Vision.buildDrawList()`
 
 供**高分辨率清晰渲染**（`render_hires.py` / `run_ui_luau.py --style hires`）使用。
 返回一个数组，每个元素对应一个可见 GuiObject，含其**精确矩形与完整样式**：
@@ -165,7 +172,10 @@ __HARNESS.summary()                         -- 必须，否则报告不汇总
 ### 已还原的 Roblox 渲染语义
 
 - **布局**：`Scale+Offset` 折算、`AnchorPoint`、`UIListLayout`（含 SortOrder/对齐/间距）、
-  `UIPadding` 收缩内容区、`ClipsDescendants`/`ScrollingFrame` 矩形裁剪、`CanvasGroup` 组透明度向下传递。
+  `UIPadding` 收缩内容区、`ClipsDescendants`/`ScrollingFrame` 矩形裁剪、`CanvasGroup` 组透明度向下传递、
+  **`AutomaticSize`（X/Y/XY）按内容自适应尺寸**（有列表布局时沿主轴累加子级尺寸，无则取子级包围盒；子级自动尺寸递归计入）。
+- **可见性**：`Visible` **沿树向下传递**——父级不可见 ⇒ 整棵子树不渲染（真实 Roblox 语义；
+  缺此传播会导致"隐藏页面"的子节点仍被绘制，典型症状是**所有页面同时显示**）。
 - **绘制序**：DFS + 同层 `(ZIndex, 原始序)` 稳定排序（`ZIndexBehavior.Sibling`）。
 - **样式**：`Color3`、`BackgroundTransparency`、`UICorner`、`UIStroke`、`BorderSizePixel`、
   `UIGradient`（颜色 + `Transparency` 渐隐 + `Offset`）、`TextStroke`、`Rotation`。

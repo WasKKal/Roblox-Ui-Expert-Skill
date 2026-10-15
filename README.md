@@ -47,6 +47,11 @@ python3 scripts/preview_server.py --port 8765
 
 # CLI 侧等价的交互：在场景之后按坐标点击（可多次）
 python3 scripts/run_ui_luau.py --lib "..." --scenario s.lua --out o.png --click 25,465 --click 1240,775
+
+# 7) 映射到公网（SSH 反向隧道，免费无需账号；务必带访问令牌）
+python3 scripts/preview_server.py --port 8765 --token auto
+ssh -o StrictHostKeyChecking=no -T -R 80:localhost:8765 nokey@localhost.run
+#   得到 https://xxxxxxxx.lhr.life → 访问 https://xxxxxxxx.lhr.life/?k=<token>
 ```
 
 **用真实大型库验证（DeltaUI，475KB）：**

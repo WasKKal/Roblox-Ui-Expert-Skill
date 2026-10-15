@@ -440,8 +440,27 @@ end
 -- 渐变求值
 -- ---------------------------------------------------------------------------
 
+-- 解析 UIGradient 的色彩关键点：真机写法 grad.Color = ColorSequence.new({...})，
+-- UIGradient 本身没有 keypoints 字段（属性存在实例的 _props 中），故必须经实例索引读取 Color。
+local function gradColorKps(grad)
+    local cs = grad.Color
+    if type(cs) == "table" and type(cs.keypoints) == "table" and #cs.keypoints > 0 then
+        return cs.keypoints
+    end
+    local kps = grad.keypoints          -- 兼容直接挂 keypoints 的写法
+    if type(kps) == "table" and #kps > 0 then return kps end
+    return nil
+end
+local function gradTrKps(grad)
+    local ns = grad.Transparency
+    if type(ns) == "table" and type(ns.keypoints) == "table" and #ns.keypoints > 0 then
+        return ns.keypoints
+    end
+    return nil
+end
+
 local function evalGradient(grad, rect, cx, cy)
-    local kps = rawget(grad, "keypoints")
+    local kps = gradColorKps(grad)
     if not kps or #kps == 0 then return nil end
     local rot = grad.Rotation or 0
     local t
@@ -1102,7 +1121,7 @@ end
 local function gradInfo(decor)
     local grad = findDecor(decor, "UIGradient")
     if not grad or grad.Enabled == false then return nil end
-    local kps = rawget(grad, "keypoints")
+    local kps = gradColorKps(grad)
     if not kps or #kps == 0 then return nil end
     local out = { rotation = grad.Rotation or 0, kps = {} }
     for _, kp in ipairs(kps) do
@@ -1113,6 +1132,22 @@ local function gradInfo(decor)
         }
     end
     if #out.kps == 0 then return nil end
+    -- UIGradient.Transparency：NumberSequence，用于沿渐变轴做渐隐/渐显
+    local trk = gradTrKps(grad)
+    if trk then
+        out.tr = {}
+        for _, kp in ipairs(trk) do
+            local v = kp.Value
+            if type(v) == "table" then v = v.Value end
+            out.tr[#out.tr + 1] = { t = kp.Time or 0, v = v or 0 }
+        end
+    end
+    -- Offset（Vector2）：沿渐变轴平移
+    local off = grad.Offset
+    if type(off) == "table" and ((off.X or 0) ~= 0 or (off.Y or 0) ~= 0) then
+        out.ox = off.X or 0
+        out.oy = off.Y or 0
+    end
     return out
 end
 
@@ -1122,7 +1157,11 @@ local function strokeInfo(decor, ga)
     local a = (1 - (stroke.Transparency or 0)) * ga
     if a <= 0.02 then return nil end
     local c = stroke.Color or { R = 0, G = 0, B = 0 }
-    return { thickness = stroke.Thickness or 0, a = a, r = c.R or 0, g = c.G or 0, b = c.B or 0 }
+    return {
+        thickness = stroke.Thickness or 0, a = a, r = c.R or 0, g = c.G or 0, b = c.B or 0,
+        applyMode = enumName(stroke.ApplyStrokeMode) or "Contextual",
+        lineJoin = enumName(stroke.LineJoinMode) or "Round",
+    }
 end
 
 local function padInfo(decor)
@@ -1151,6 +1190,8 @@ function Vision.buildDrawList()
                     seq = seq, class = cls, name = inst.Name or "",
                     x = e.rect.x, y = e.rect.y, w = e.rect.w, h = e.rect.h,
                     clip = e.clip,
+                    zindex = inst.ZIndex or 1,
+                    rotation = inst.Rotation or 0,
                     bgAlpha = (1 - (inst.BackgroundTransparency or 0)) * ga,
                     bg = colorOf(inst.BackgroundColor3),
                     corner = cornerOf(e.decor, e.rect),
@@ -1182,6 +1223,12 @@ function Vision.buildDrawList()
                     op.ya = enumName(inst.TextYAlignment) or "Top"
                     op.wrapped = inst.TextWrapped and true or false
                     op.scaled = inst.TextScaled and true or false
+                    -- 文字描边（Roblox TextStrokeTransparency<1 时生效）
+                    local tsA = 1 - (inst.TextStrokeTransparency or 1)
+                    if tsA > 0.02 then
+                        local sc = inst.TextStrokeColor3 or { R = 0, G = 0, B = 0 }
+                        op.textStroke = { r = sc.R or 0, g = sc.G or 0, b = sc.B or 0, a = tsA }
+                    end
                 end
                 ops[#ops + 1] = op
             end

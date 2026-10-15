@@ -21,35 +21,59 @@ render_hires.py — 用矢量方式把引擎绘制列表渲染成【清晰】的
 import os
 from PIL import Image, ImageDraw, ImageFont, ImageChops
 
-FONT_REGULAR = [
+# 拉丁字形用 Roblox 同源字体（Source Sans 3 ≈ Enum.Font.SourceSans，Inter ≈ Gotham），
+# 中文（CJK）回退到 Noto Sans CJK（Roblox 本身也没有 CJK 字形，由引擎回退）
+_ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts")
+_ROBLOX_FONTS = {
+    "sans": os.path.join(_ASSETS, "SourceSans3-400.ttf"),
+    "inter": os.path.join(_ASSETS, "Inter-400.ttf"),
+}
+_CJK_REGULAR = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
-FONT_BOLD = [
+_CJK_BOLD = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Bold.otf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 
 _font_cache = {}
 
 
-def load_font(size, bold=False):
+def family_of(fontname):
+    """Roblox Enum.Font 名 → 字体族"""
+    n = fontname or ""
+    if "Gotham" in n:
+        return "inter"
+    return "sans"          # SourceSans / Legacy / 其它一律用 Source Sans 3
+
+
+def load_font(size, bold=False, family="sans"):
     size = max(4, int(round(size)))
-    key = (size, bool(bold))
+    key = (size, bool(bold), family)
     if key in _font_cache:
         return _font_cache[key]
     font = None
-    for p in (FONT_BOLD if bold else FONT_REGULAR):
-        if os.path.exists(p):
-            try:
-                font = ImageFont.truetype(p, size)
-                break
-            except Exception:
-                font = None
+    if family in _ROBLOX_FONTS and os.path.exists(_ROBLOX_FONTS[family]):
+        try:
+            font = ImageFont.truetype(_ROBLOX_FONTS[family], size)   # 可变字体：一份覆盖全字重
+            if bold:
+                try:
+                    font.set_variation_by_axes([600])
+                except Exception:
+                    pass
+        except Exception:
+            font = None
+    if font is None:                                    # CJK / 兜底
+        for p in (_CJK_BOLD if bold else _CJK_REGULAR):
+            if os.path.exists(p):
+                try:
+                    font = ImageFont.truetype(p, size)
+                    break
+                except Exception:
+                    font = None
     if font is None:
         try:
             font = ImageFont.load_default(size=size)
@@ -57,6 +81,28 @@ def load_font(size, bold=False):
             font = ImageFont.load_default()
     _font_cache[key] = font
     return font
+
+
+def _is_cjk(ch):
+    o = ord(ch)
+    return (0x2E80 <= o <= 0x9FFF) or (0xF900 <= o <= 0xFAFF) or (0xFF00 <= o <= 0xFFEF) \
+        or (0x3000 <= o <= 0x303F) or (0x20000 <= o <= 0x3FFFF)
+
+
+def runs_of(text, size, bold, family):
+    """按字符把文本切成 (子串, 字体) 段：拉丁→Roblox 同源字体，CJK→Noto"""
+    out = []
+    for ch in text:
+        fam = "cjk" if _is_cjk(ch) else family
+        if out and out[-1][1] == fam:
+            out[-1][0] += ch
+        else:
+            out.append([ch, fam])
+    return [(s, load_font(size, bold, fam)) for s, fam in out]
+
+
+def measure(text, size, bold, family, draw):
+    return sum(draw.textlength(s, font=f) for s, f in runs_of(text, size, bold, family))
 
 
 def _clamp(v, lo, hi):
@@ -117,8 +163,8 @@ def _grad_strip(w, h, grad):
         return strip.resize((w, h))
 
 
-def _wrap(lines, font, max_w):
-    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+def _wrap(lines, size, bold, family, max_w):
+    d = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     out = []
     for line in lines:
         if line == "":
@@ -130,7 +176,7 @@ def _wrap(lines, font, max_w):
                 out.append(cur)
                 cur = ""
                 continue
-            if draw.textlength(cur + ch, font=font) <= max_w or cur == "":
+            if cur == "" or measure(cur + ch, size, bold, family, d) <= max_w:
                 cur += ch
             else:
                 out.append(cur)
@@ -159,36 +205,43 @@ def _draw_text(layer, op, ox, oy, w, h, S):
         return
     fontname = op.get("font") or ""
     bold = ("Bold" in fontname) or ("Black" in fontname)
+    family = family_of(fontname)
     base_size = float(op.get("textSize", 14)) * S
     wrapped = bool(op.get("wrapped"))
     scaled = bool(op.get("scaled"))
-
     lines = text.split("\n")
+    d = ImageDraw.Draw(layer)
 
-    def fit_size(size):
-        f = load_font(size, bold)
-        ls = _wrap(lines, f, aw) if wrapped else lines
-        asc, desc = f.getmetrics()
+    def line_metrics(size):
+        f0 = load_font(size, bold, family)
+        try:
+            asc, desc = f0.getmetrics()
+        except Exception:
+            asc, desc = size, size * 0.25
         lh = asc + desc
-        total_h = lh * len(ls)
-        max_w = max((ImageDraw.Draw(layer).textlength(s, font=f) for s in ls), default=0)
-        return f, ls, lh, total_h, max_w
+        ls = _wrap(lines, size, bold, family, aw) if wrapped else lines
+        tw = max((measure(s, size, bold, family, d) for s in ls), default=0)
+        return ls, lh, lh * len(ls), tw
 
     if scaled:
         # 二分求最大可容纳字号（宽/高双约束）
         lo, hi = 1.0, max(base_size, 4.0)
-        best = (load_font(4, bold), ["…"], 4, 4, 0)
+        best = None
         for _ in range(18):
             mid = (lo + hi) / 2
-            f, ls, lh, th, mw = fit_size(mid)
-            if mw <= aw and th <= ah:
-                best = (f, ls, lh, th, mw)
+            ls, lh, th, tw = line_metrics(mid)
+            if tw <= aw and th <= ah:
+                best = (mid, ls, lh, th)
                 lo = mid
             else:
                 hi = mid
-        font, ls, lh, total_h, _ = best
+        if best is None:
+            ls0, lh0, th0, _ = line_metrics(4.0)
+            best = (4.0, ls0, lh0, th0)
+        size, ls, lh, total_h = best
     else:
-        font, ls, lh, total_h, _ = fit_size(base_size)
+        size = base_size
+        ls, lh, total_h, _ = line_metrics(size)
 
     xa = op.get("xa", "Left")
     ya = op.get("ya", "Top")
@@ -199,19 +252,21 @@ def _draw_text(layer, op, ox, oy, w, h, S):
     else:
         by = ay
 
-    d = ImageDraw.Draw(layer)
     fill = (tc[0], tc[1], tc[2], ta)
     for i, ln in enumerate(ls):
         if ln == "":
             continue
-        lw = d.textlength(ln, font=font)
+        lw = measure(ln, size, bold, family, d)
         if xa == "Center":
             bx = ax + (aw - lw) / 2
         elif xa == "Right":
             bx = ax + aw - lw
         else:
             bx = ax
-        d.text((bx, by + i * lh), ln, font=font, fill=fill)
+        yy = by + i * lh
+        for seg, f in runs_of(ln, size, bold, family):
+            d.text((bx, yy), seg, font=f, fill=fill)
+            bx += d.textlength(seg, font=f)
 
 
 def render_hires(report, out_path, bg=(15, 17, 21), scale=2, ss=3, show_text=True):

@@ -29,10 +29,19 @@ run_ui_luau.py — 用【真实 Luau 解释器】执行 UI 代码并渲染出 PN
     --cell WxH        网格单元格像素，默认 8x16
     --bg COLOR        画布背景色 #RRGGBB，默认 #0F1115
     --no-glyphs       不绘制字符（只出纯色块，更接近真实 UI）
+    --style S         grid=色彩网格(默认) | hires=矢量高清清晰图 | both=两者都出
+    --scale N         hires 输出放大倍数（默认 2：800x600→1600x1200）
+    --ss N            hires 超采样倍数（默认 3，越大边缘越平滑）
+    --dump-json FILE  把引擎报告 JSON 落盘（可用 render_hires.py 离线重渲染）
     --max-seconds N   场景最大虚拟秒数，默认 300
     --pump-after N    场景结束后额外推进的虚拟秒数，默认 1
     --luau PATH       luau 可执行路径（默认自动探测）
 退出码：0 = 全部通过；1 = 有失败断言或运行错误；2 = 用法/加载/解释器错误
+
+清晰渲染示例：
+    python3 run_ui_luau.py --lib "URL=examples/simple_ui.lua" \
+        --scenario examples/simple_scenario.lua \
+        --out /workspace/ui_clear.png --style hires --scale 2
 """
 
 import argparse
@@ -212,6 +221,11 @@ def render_report(rep, out_path, bg, no_glyphs):
     return img
 
 
+def hires_path(out_path):
+    root, ext = os.path.splitext(out_path)
+    return root + "_hires" + (ext or ".png")
+
+
 def extract_json(stdout_text):
     begin = "--ROBLOXUI_JSON_BEGIN--"
     end = "--ROBLOXUI_JSON_END--"
@@ -237,6 +251,11 @@ def main():
     ap.add_argument("--max-seconds", type=float, default=300.0)
     ap.add_argument("--pump-after", type=float, default=1.0)
     ap.add_argument("--luau", default="", help="luau 可执行路径")
+    ap.add_argument("--style", choices=["grid", "hires", "both"], default="grid",
+                    help="渲染风格：grid=色彩网格(默认)；hires=矢量高清清晰图；both=两者都出")
+    ap.add_argument("--scale", type=int, default=2, help="hires 输出放大倍数（默认 2，即 800x600→1600x1200）")
+    ap.add_argument("--ss", type=int, default=3, help="hires 超采样倍数（默认 3，越大边缘越平滑）")
+    ap.add_argument("--dump-json", default="", help="把引擎报告 JSON 落盘（便于离线重渲染）")
     args = ap.parse_args()
 
     try:
@@ -307,8 +326,20 @@ def main():
             fail("未能从 luau 输出抽取 JSON（场景可能未正常结束）", 1)
 
         rep = json.loads(json_text)
-        img = render_report(rep, args.out, bg, args.no_glyphs)
-        print("[run_ui_luau] 已导出 %s  (%dx%d px)" % (args.out, img.width, img.height))
+        if args.dump_json:
+            with open(args.dump_json, "w", encoding="utf-8") as f:
+                json.dump(rep, f, ensure_ascii=False)
+
+        if args.style in ("grid", "both"):
+            img = render_report(rep, args.out, bg, args.no_glyphs)
+            print("[run_ui_luau] 已导出(grid)  %s  (%dx%d px)" % (args.out, img.width, img.height))
+        if args.style in ("hires", "both"):
+            from render_hires import render_hires
+            hp = args.out if args.style == "hires" else hires_path(args.out)
+            himg = render_hires(rep, hp, bg=bg, scale=max(1, args.scale),
+                                ss=max(1, args.ss), show_text=not args.no_glyphs)
+            print("[run_ui_luau] 已导出(hires) %s  (%dx%d px, 放大 x%d · 超采样 x%d)"
+                  % (hp, himg.width, himg.height, max(1, args.scale), max(1, args.ss)))
 
         checks = rep.get("checks", {})
         fails = int(checks.get("fail", 0))

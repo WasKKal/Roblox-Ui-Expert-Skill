@@ -199,9 +199,26 @@ python3 scripts/public_tunnel.py --port 8765 --token <token>
 
 安全提示：`--token` 会拦截所有未携带 `?k=<token>` 的请求（API 返回 403、页面返回提示页）。
 免费隧道域名是**临时**的，SSH 断开或沙箱休眠后会失效——守护脚本会自动换新域名。
-要**固定域名**需注册服务账号：serveo 支持自定义子域，但需先用 GitHub/Google 登录
-`https://console.serveo.net/ssh/keys` 注册本机公钥，然后
-`python3 scripts/public_tunnel.py --engine serveo --identity ~/.ssh/serveo_key --subdomain <名字>`。
+要**固定域名**（重连也不变）只需一次性注册 SSH 公钥：
+
+```bash
+# 1) 生成本机 key，取出指纹
+ssh-keygen -t rsa -b 2048 -f ~/.ssh/serveo_key -N ""
+ssh-keygen -lf ~/.ssh/serveo_key.pub          # → SHA256:xxxx
+
+# 2) 用 GitHub/Google 登录注册该公钥（一次性）
+#    https://console.serveo.net/ssh/keys
+
+# 3) 用固定子域起隧道（子域名可自定）
+python3 scripts/public_tunnel.py --port 8765 --token <token> \
+    --engine serveo --identity ~/.ssh/serveo_key --subdomain deltaui-preview
+# → https://deltaui-preview.serveousercontent.com/?k=<token>   ← 固定
+```
+
+> 注意：serveo **免费**隧道在**浏览器首次访问**时会先显示一次 "Serveo Browser Warning"
+> 中转页，点 **Continue to Site** 即进入应用（之后同一浏览器会话不再出现）；
+> 直接访问 `/api/*`（curl、页面内的 fetch）**不受影响**。Pro 可去掉该页；
+> localhost.run 无此页但域名随机、且无法固定。
 
 ## 场景脚本怎么写
 

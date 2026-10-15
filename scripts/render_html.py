@@ -20,6 +20,11 @@ import html
 import json
 import os
 
+try:
+    import icons as icons_mod          # 同目录：图标资源解析（lucide SVG）
+except Exception:                      # pragma: no cover
+    icons_mod = None
+
 # Roblox 同源字体（assets/fonts 下的可变字体 woff2）内嵌为 data URI，
 # 让浏览器用与 Roblox 一致的字体度量渲染，缩小文本位置/宽度差异。
 _FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -73,6 +78,8 @@ header .title { font-weight: 700; font-size: 14px; color: #e6edf3; }
 header .meta { font-size: 12px; color: #8b949e; }
 header .ok { color: #3fb950; } header .bad { color: #f85149; }
 header .spacer { flex: 1; }
+header input[type=range] { width: 130px; accent-color: #2f6feb; }
+header .frame { font-size: 12px; color: #8b949e; min-width: 56px; text-align: center; }
 button {
   background: #22262e; color: #c9d1d9; border: 1px solid #313744; border-radius: 6px;
   padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
@@ -91,6 +98,11 @@ button.on { background: #2f6feb33; border-color: #2f6feb; color: #79c0ff; }
   outline: 1px solid #2b303b;
 }
 .gui { position: absolute; }
+/* 图标：内联 SVG 填满元素，用 CSS color 着色（stroke=currentColor） */
+.gui > svg.icon {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  display: block; pointer-events: none;
+}
 .gui.hl { outline: 2px solid #58a6ff !important; outline-offset: 0; }
 .badges .gui[data-name]::after {
   content: attr(data-badge); position: absolute; left: 0; top: 0;
@@ -116,6 +128,8 @@ let REPORT = (typeof REPORT_DATA !== 'undefined' && REPORT_DATA) ? REPORT_DATA
              : { viewport: {w:800,h:600}, draws: [] };
 let V = REPORT.viewport || {w:800,h:600};
 let OPS = REPORT.draws || [];
+let ICONS = (typeof ICONS_DATA !== 'undefined' && ICONS_DATA) ? ICONS_DATA : {};
+let REF2NAME = (typeof REF2NAME_DATA !== 'undefined' && REF2NAME_DATA) ? REF2NAME_DATA : {};
 const vp = document.getElementById('vp');
 
 function c255(x){ return Math.max(0, Math.min(255, Math.round((x||0)*255))); }
@@ -242,10 +256,21 @@ function build(){
     if(op.corner>0) st.borderRadius = op.corner+'px';
     const sh = shadowsOf(op); if(sh) st.boxShadow = sh;
     if(op.image){
-      st.backgroundImage = `repeating-linear-gradient(45deg, ${rgba(op.imageColor,0.18)} 0 6px, transparent 6px 12px)`;
-      st.backgroundBlendMode='overlay';
-      if(bg!=='transparent') st.background = bg + ', ' + st.backgroundImage;
-      else st.background = rgba(op.imageColor,0.10);
+      const nm = op.imageRef ? REF2NAME[op.imageRef] : null;
+      const frag = nm ? ICONS[nm] : null;
+      if(frag){
+        // 真正还原图标：内联 SVG（矢量、随 imageColor 着色）
+        el.insertAdjacentHTML('beforeend', frag);
+        const sv = el.lastElementChild;
+        if(sv){ sv.classList.add('icon');
+          el.style.color = rgba(op.imageColor, op.imageAlpha==null?1:op.imageAlpha); }
+      } else {
+        // 无法还原资源（rbxassetid 等）→ 半透明占位
+        st.backgroundImage = `repeating-linear-gradient(45deg, ${rgba(op.imageColor,0.18)} 0 6px, transparent 6px 12px)`;
+        st.backgroundBlendMode='overlay';
+        if(bg!=='transparent') st.background = bg + ', ' + st.backgroundImage;
+        else st.background = rgba(op.imageColor,0.10);
+      }
     }
     const cp = clipOf(op); if(cp) st.clipPath = cp;
     if(op.rotation) st.transform = `rotate(${op.rotation}deg)`;
@@ -329,10 +354,12 @@ document.getElementById('tbg').onclick  = e=>{
 };
 
 // 动态换渲染目标（预览服务器上传后调用）
-function loadReport(rep) {
+function loadReport(rep, icons, ref2name) {
   REPORT = rep || { viewport: {w:800,h:600}, draws: [] };
   V = REPORT.viewport || {w:800,h:600};
   OPS = REPORT.draws || [];
+  if (icons) ICONS = icons;
+  if (ref2name) REF2NAME = ref2name;
   vp.innerHTML = '';
   hideTip();
   build();
@@ -340,8 +367,68 @@ function loadReport(rep) {
   applyZoom();
 }
 window.loadReport = loadReport;
+window.setIcons = function(icons, ref2name){ ICONS = icons||{}; REF2NAME = ref2name||{}; };
 
-if (typeof REPORT_DATA !== 'undefined' && REPORT_DATA) { build(); zoom = autoFitZoom(); applyZoom(); }
+// ---------------------------------------------------------------------------
+// 动画时间轴：--capture 采样得到的多帧（每帧一份绘制列表）
+// ---------------------------------------------------------------------------
+const FRAMES = (typeof FRAMES_DATA !== 'undefined' && FRAMES_DATA) ? FRAMES_DATA : [];
+const FINTERVAL = (typeof FRAME_INTERVAL !== 'undefined') ? FRAME_INTERVAL : 0.2;
+let fIdx = 0, playTimer = null, playing = false;
+
+function frameDuration(){ return Math.max(40, FINTERVAL * 1000); }
+
+function showFrame(i){
+  if(!FRAMES.length) return;
+  i = Math.max(0, Math.min(FRAMES.length - 1, i|0));
+  fIdx = i;
+  OPS = FRAMES[i].draws || [];
+  vp.innerHTML = '';
+  hideTip();
+  build();
+  applyZoom();
+  const fn = document.getElementById('fnum');
+  if(fn) fn.textContent = (i+1) + '/' + FRAMES.length;
+  const rg = document.getElementById('frange');
+  if(rg) rg.value = i;
+  const hc = document.getElementById('hcount');
+  if(hc) hc.textContent = '元素 ' + OPS.length + ' · 帧 ' + (i+1) + '/' + FRAMES.length;
+}
+window.showFrame = showFrame;
+
+function tickPlay(){
+  if(!playing) return;
+  playTimer = setTimeout(()=>{
+    if(!playing) return;
+    showFrame((fIdx + 1) % FRAMES.length);
+    tickPlay();
+  }, frameDuration());
+}
+
+function togglePlay(){
+  if(!FRAMES.length) return;
+  playing = !playing;
+  const b = document.getElementById('play');
+  if(b) b.textContent = playing ? '❚❚' : '▶';
+  if(playing){
+    if(fIdx >= FRAMES.length - 1) showFrame(0);
+    tickPlay();
+  } else if(playTimer){ clearTimeout(playTimer); playTimer = null; }
+}
+if(FRAMES.length > 1){
+  const pb = document.getElementById('play');
+  if(pb) pb.onclick = togglePlay;
+  const rg = document.getElementById('frange');
+  if(rg){
+    rg.max = FRAMES.length - 1;
+    rg.oninput = ()=>{ if(playing) togglePlay(); showFrame(parseInt(rg.value,10)||0); };
+  }
+}
+
+if (typeof REPORT_DATA !== 'undefined' && REPORT_DATA) {
+  if (FRAMES.length > 1) { showFrame(FRAMES.length - 1); }   // 多帧：先显示终态
+  else { build(); zoom = autoFitZoom(); applyZoom(); }
+}
 """
 
 
@@ -349,40 +436,80 @@ def _header(meta):
     ok = meta.get("pass", 0)
     fail = meta.get("fail", 0)
     nerr = meta.get("errors", 0)
+    nframes = int(meta.get("frames", 0))
     cls = "ok" if (fail == 0 and nerr == 0) else "bad"
-    return (
+    anim = ""
+    if nframes > 1:
+        anim = ('<button id="play" title="播放/暂停动画">▶</button>'
+                '<input type="range" id="frange" min="0" max="%d" value="%d" title="动画帧">'
+                '<span class="frame" id="fnum"></span>' % (nframes - 1, nframes - 1))
+    return ((
         '<header>'
         '<span class="title">Roblox UI 预览</span>'
         '<span class="meta">引擎 <b>%s</b></span>'
         '<span class="meta">视口 %dx%d</span>'
-        '<span class="meta">元素 <b>%d</b></span>'
+        '<span class="meta" id="hcount">元素 %d</span>'
         '<span class="meta %s">断言 %d/%d · 错误 %d</span>'
         '<span class="spacer"></span>'
+    ) + anim + (
         '<button id="zout">−</button><button id="z1">100%%</button><button id="zin">＋</button>'
         '<button id="tbox">边界框</button>'
         '<button id="tseq">绘制序</button>'
         '<button id="tx">隐藏文字</button>'
         '<button id="tbg">浅色底</button>'
-        '</header>' % (
-            html.escape(str(meta.get("engine", "luau"))),
-            int(meta.get("vw", 800)), int(meta.get("vh", 600)), int(meta.get("count", 0)),
-            cls, ok, ok + fail, nerr,
-        )
+        '</header>'
+    )) % (
+        html.escape(str(meta.get("engine", "luau"))),
+        int(meta.get("vw", 800)), int(meta.get("vh", 600)), int(meta.get("count", 0)),
+        cls, ok, ok + fail, nerr,
     )
+
+
+def collect_icons(report):
+    """遍历绘制列表，把 Image 引用解析成图标名与其内联 SVG 片段。
+
+    返回 (icons, refmap)：icons = {图标名: 内联 SVG 片段}，refmap = {Image 原始串: 图标名}。
+    渲染器据此把 ImageLabel 真正画成图标，而不是半透明占位块。
+    """
+    icons, refmap = {}, {}
+    if icons_mod is None:
+        return icons, refmap
+    for op in (report.get("draws") or []):
+        ref = op.get("imageRef")
+        if not ref or ref in refmap:
+            continue
+        nm = icons_mod.icon_name(ref)
+        if not nm:
+            continue
+        refmap[ref] = nm
+        if nm in icons:
+            continue
+        txt = icons_mod.svg_for(nm)
+        if not txt:
+            continue
+        frag = icons_mod.inline_svg(txt)
+        if frag:
+            icons[nm] = frag
+    return icons, refmap
 
 
 def render_html(report, out_path, title="Roblox UI"):
     vp = report.get("viewport") or {}
     draws = report.get("draws") or []
     checks = report.get("checks") or {}
+    frames = report.get("frames") or []
+    finterval = float(report.get("frameInterval") or 0.2)
     meta = {
         "engine": report.get("engine", "luau"),
         "vw": vp.get("w", 800), "vh": vp.get("h", 600),
         "count": len(draws),
         "pass": int(checks.get("pass", 0)), "fail": int(checks.get("fail", 0)),
         "errors": len(report.get("errors") or []),
+        "frames": len(frames),
     }
+    icons_map, refmap = collect_icons(report)
     payload = {"viewport": vp, "draws": draws}
+    frames_payload = [{"t": f.get("t", 0), "draws": f.get("draws") or []} for f in frames]
     doc = (
         "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
         "<meta charset=\"utf-8\">\n"
@@ -393,7 +520,11 @@ def render_html(report, out_path, title="Roblox UI"):
         "\n<div class=\"stage\" id=\"stage\"><div class=\"wrap\" id=\"wrap\">"
         "<div class=\"viewport\" id=\"vp\"></div></div></div>\n"
         "<div id=\"tip\"></div>\n"
-        "<script>const REPORT_DATA=" + _esc_json(payload) + ";</script>\n"
+        "<script>const REPORT_DATA=" + _esc_json(payload) + ";\n"
+        "const ICONS_DATA=" + _esc_json(icons_map) + ";\n"
+        "const REF2NAME_DATA=" + _esc_json(refmap) + ";\n"
+        "const FRAMES_DATA=" + _esc_json(frames_payload) + ";\n"
+        "const FRAME_INTERVAL=" + repr(finterval) + ";</script>\n"
         "<script>" + _JS + "</script>\n"
         "</body>\n</html>\n"
     )

@@ -104,3 +104,24 @@ Heartbeat) / `TextService` / `UserInputService` / `Workspace` / `ReplicatedStora
 5. **性能**
    布局/渲染为纯 Lua，单次 `Snapshot` 在 800×600 / 100×38 网格下毫秒级；超大 UI（数千节点）
    会线性变慢，属预期。
+
+---
+
+## 六、为兼容真实大型库补齐的真机语义
+
+跑真实库（DeltaUI 475KB、DynamicCowUI 等）时暴露的 mock 保真缺口，已按 Roblox 语义补齐：
+
+| 项 | 真机行为 | mock 处理 |
+|----|----------|-----------|
+| `Instance.Name` | 永远返回字符串（默认=类名） | `__index` 未设置时返回 `ClassName`（此前 nil，会让 Luau 的 `string.format("%s")` 报错） |
+| `TextLabel.TextBounds` | 随 Text/TextSize 变化的 Vector2 | 按 em 系数估算（ASCII≈0.55em，非 ASCII≈1em，行高≈1.2×TextSize） |
+| `Stats.PerformanceStats.*` | 有 `Ping`/`Heartbeat` 等，`.GetValue()` 返回数字 | 专用小 mock（Ping=42），未知项返回数字 0 |
+| 未模拟 service 的未知字段 | —— | 返回**通用代理**：可调用、可索引、含 `Connect/Wait/Fire`、`#` 为 0（真值性同"函数"，不改变库的分支判断） |
+| 未模拟 service 的 `_children` | 真实容器 | 暴露真实空表（`.Parent = CoreGui` 之类可安全挂接，不再崩） |
+| 全局 `unpack` | Luau 自带 | lupa（Lua 5.4+ 已移除）下补 `unpack = table.unpack` |
+| 全局 `getfenv` / `setfenv` | Luau 自带（且 `getfenv()` 可写） | lupa 下补近似实现（`getfenv()` 返回 `_G`） |
+| `math.floor(CornerRadius.Offset)` 等 | 属性为整数 | 报告格式化统一 `toInt()` 取整，避免 `%d` 收到浮点报错 |
+
+> `_G` 写入：真实 luau CLI 的 `_G` 是只读表，但 `getfenv()` 返回同一个**可写**默认全局环境。
+> 因此执行「大量写 `_G` 的库」时，可给源码前置一行 `local _G = (getfenv and getfenv()) or _G`
+> （见 `examples/delta_scenario.lua`），lupa 与 luau 均成立。

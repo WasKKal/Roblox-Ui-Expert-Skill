@@ -40,6 +40,13 @@ local function clamp(v, lo, hi)
     return v
 end
 
+-- %d 需要一个"整数"：真实库常给出浮点（如 CornerRadius.Offset=0.5、BorderSizePixel=1.5），
+-- 直接传 float 会让 string.format("%d") 报 "number has no integer representation"。统一取整。
+local function toInt(v)
+    local n = tonumber(v)
+    return math.floor(n or 0)
+end
+
 local function enumName(v)
     if type(v) == "table" and v.Name then return v.Name end
     return tostring(v)
@@ -863,7 +870,7 @@ local function decorNote(inst, decor)
     local notes = {}
     local corner = findDecor(decor, "UICorner")
     if corner then
-        notes[#notes + 1] = string.format("圆角r=%d", (corner.CornerRadius and corner.CornerRadius.Offset) or 0)
+        notes[#notes + 1] = string.format("圆角r=%d", toInt(corner.CornerRadius and corner.CornerRadius.Offset))
     end
     local stroke = findDecor(decor, "UIStroke")
     if stroke then
@@ -875,25 +882,25 @@ local function decorNote(inst, decor)
         local kps = rawget(grad, "keypoints")
         local c1 = kps[1].Value or kps[1].Color
         local c2 = kps[#kps].Value or kps[#kps].Color
-        notes[#notes + 1] = string.format("渐变%s→%s @%d°", hex(c1), hex(c2), grad.Rotation or 0)
+        notes[#notes + 1] = string.format("渐变%s→%s @%d°", hex(c1), hex(c2), toInt(grad.Rotation))
     end
     local pad = findDecor(decor, "UIPadding")
     if pad then
         local l, r, t, b = pad.PaddingLeft.Offset, pad.PaddingRight.Offset,
             pad.PaddingTop.Offset, pad.PaddingBottom.Offset
         if l + r + t + b > 0 then
-            notes[#notes + 1] = string.format("内边距 L%d R%d T%d B%d", l, r, t, b)
+            notes[#notes + 1] = string.format("内边距 L%d R%d T%d B%d", toInt(l), toInt(r), toInt(t), toInt(b))
         end
     end
     local ll = findDecor(decor, "UIListLayout")
     if ll then
         notes[#notes + 1] = string.format("列表布局 %s pad=%d %s",
-            enumName(ll.FillDirection), ll.Padding.Offset or 0, enumName(ll.SortOrder))
+            enumName(ll.FillDirection), toInt(ll.Padding.Offset), enumName(ll.SortOrder))
     end
     local grid = findDecor(decor, "UIGridLayout")
     if grid then
         notes[#notes + 1] = string.format("网格布局 cell=%dx%d",
-            grid.CellSize.X.Offset, grid.CellSize.Y.Offset)
+            toInt(grid.CellSize.X.Offset), toInt(grid.CellSize.Y.Offset))
     end
     return notes
 end
@@ -904,7 +911,7 @@ local function describeEntry(sb, entry, prefix, isLast)
     local branch = isLast and "└─ " or "├─ "
     if prefix == "" then branch = "" end
     local head = string.format("%s%s%s \"%s\" Z=%d (%.0f,%.0f) %.0fx%.0f",
-        prefix, branch, inst.ClassName, inst.Name, inst.ZIndex or 1, r.x, r.y, r.w, r.h)
+        prefix, branch, inst.ClassName, tostring(inst.Name), toInt(inst.ZIndex), r.x, r.y, r.w, r.h)
     local notes = {}
     if not entry.visible then notes[#notes + 1] = "隐藏" end
     local bgA = (1 - (inst.BackgroundTransparency or 0)) * (entry.groupAlpha or 1)
@@ -920,12 +927,12 @@ local function describeEntry(sb, entry, prefix, isLast)
         notes[#notes + 1] = string.format("组透明 a=%.2f", entry.groupAlpha or 1)
     end
     if (inst.BorderSizePixel or 0) > 0 then
-        notes[#notes + 1] = string.format("边框%dpx %s", inst.BorderSizePixel, hex(inst.BorderColor3))
+        notes[#notes + 1] = string.format("边框%dpx %s", toInt(inst.BorderSizePixel), hex(inst.BorderColor3))
     end
     local tl = entry.textLayout
     if tl then
         notes[#notes + 1] = string.format("text=%q %dpx %s %s/%s",
-            inst.Text, tl.size, hex(inst.TextColor3),
+            inst.Text, toInt(tl.size), hex(inst.TextColor3),
             enumName(inst.TextXAlignment), enumName(inst.TextYAlignment))
         if inst.TextWrapped then notes[#notes + 1] = "自动换行" end
         if inst.TextScaled then notes[#notes + 1] = "文字缩放" end
@@ -951,8 +958,8 @@ function Vision.describeTree(layout)
     local sb = {}
     for _, gl in ipairs(layout) do
         sb[#sb + 1] = string.format("ScreenGui \"%s\"%s DisplayOrder=%d  (视口 %dx%d)",
-            gl.gui.Name, gl.gui.Enabled == false and " [禁用]" or "",
-            gl.gui.DisplayOrder or 0, Vision.viewport.w, Vision.viewport.h)
+            tostring(gl.gui.Name), gl.gui.Enabled == false and " [禁用]" or "",
+            toInt(gl.gui.DisplayOrder), toInt(Vision.viewport.w), toInt(Vision.viewport.h))
         -- entries 为 DFS 顺序：每层记录"最近节点是否为末个兄弟"即可重建树线
         local lastAtDepth = {}
         for _, e in ipairs(gl.entries) do

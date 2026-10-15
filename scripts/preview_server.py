@@ -27,6 +27,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import uuid
 
 from flask import Flask, jsonify, request, Response
 
@@ -93,14 +95,16 @@ __HARNESS.summary()
 """
 
 
-def _run_engine(engine, workdir, scenario_path, libs, viewport, timeout=300):
+def _run_engine(engine, workdir, scenario_path, libs, viewport, clicks=None, timeout=300):
     """调用 CLI 跑引擎，返回 (report dict or None, stdout 文本, 返回码)"""
     out_json = os.path.join(workdir, "_report.json")
+    clicks = clicks or []
     if engine == "lupa":
         cmd = [sys.executable, RUN_LUPA, "--scenario", scenario_path,
                "--viewport", viewport, "--max-seconds", "40", "--emit-json"]
         for url, path in libs:
             cmd += ["--lib", "%s=%s" % (url, path)]
+        # lupa 路径暂不支持交互点击（真实 luau 路径支持）
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         rep = None
         txt = (proc.stdout or "") + (proc.stderr or "")
@@ -118,6 +122,8 @@ def _run_engine(engine, workdir, scenario_path, libs, viewport, timeout=300):
            "--dump-json", out_json]
     for url, path in libs:
         cmd += ["--lib", "%s=%s" % (url, path)]
+    for cx, cy in clicks:
+        cmd += ["--click", "%s,%s" % (cx, cy)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     rep = None
     if os.path.exists(out_json):
@@ -142,7 +148,7 @@ def _clean_logs(text):
     return "\n".join(lines)
 
 
-def _render(main_bytes, main_name, scenario_text, engine, viewport, extra_files):
+def _render(main_bytes, main_name, scenario_text, engine, viewport, extra_files, clicks=None):
     workdir = tempfile.mkdtemp(prefix="ui_preview_")
     try:
         libs = []
@@ -171,17 +177,46 @@ def _render(main_bytes, main_name, scenario_text, engine, viewport, extra_files)
         with open(scen_path, "w", encoding="utf-8") as f:
             f.write(scen)
 
-        rep, logs, code = _run_engine(engine, workdir, scen_path, libs, viewport)
+        rep, logs, code = _run_engine(engine, workdir, scen_path, libs, viewport, clicks)
         if rep is None:
-            return jsonify({"ok": False, "error": "引擎未产出绘制列表（见日志）",
-                            "logs": _clean_logs(logs), "exit": code})
-        return jsonify({"ok": True, "report": rep, "logs": _clean_logs(logs), "exit": code})
+            return {"ok": False, "error": "引擎未产出绘制列表（见日志）",
+                    "logs": _clean_logs(logs), "exit": code}
+        return {"ok": True, "report": rep, "logs": _clean_logs(logs), "exit": code}
     except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "执行超时", "logs": ""}), 200
+        return {"ok": False, "error": "执行超时", "logs": ""}
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e), "logs": ""})
+        return {"ok": False, "error": "%s: %s" % (type(e).__name__, e), "logs": ""}
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 会话：记住上传内容与渲染参数，用于交互式点击的"重放"
+# 每次点击 = 从头重放（库 → pump → 依次派发历史点击 + 新点击）→ 重新出图
+# ---------------------------------------------------------------------------
+SESSIONS = {}
+SESSION_LOCK = threading.Lock()
+MAX_SESSIONS = 40
+
+
+def _new_session(main_bytes, main_name, scenario, engine, viewport, extras):
+    sid = uuid.uuid4().hex[:12]
+    with SESSION_LOCK:
+        if len(SESSIONS) >= MAX_SESSIONS:
+            for k in list(SESSIONS.keys())[:len(SESSIONS) - MAX_SESSIONS + 1]:
+                SESSIONS.pop(k, None)
+        SESSIONS[sid] = {"main": main_bytes, "name": main_name, "scenario": scenario,
+                         "engine": engine, "viewport": viewport, "extras": extras,
+                         "clicks": []}
+    return sid
+
+
+def _render_session(sess, extra_click=None):
+    clicks = list(sess.get("clicks") or [])
+    if extra_click:
+        clicks = clicks + [extra_click]
+    return _render(sess["main"], sess["name"], sess["scenario"], sess["engine"],
+                   sess["viewport"], sess["extras"], clicks)
 
 
 @app.post("/api/render")
@@ -199,7 +234,44 @@ def api_render():
     for f in request.files.getlist("extra"):
         if f and f.filename:
             extras.append((f.filename, f.read()))
-    return _render(lib_bytes, up.filename, scenario, engine, viewport, extras)
+    d = _render(lib_bytes, up.filename, scenario, engine, viewport, extras)
+    if d.get("ok"):
+        d["sessionId"] = _new_session(lib_bytes, up.filename, scenario, engine, viewport, extras)
+    return jsonify(d)
+
+
+@app.post("/api/click")
+def api_click():
+    data = request.get_json(silent=True) or {}
+    sid = data.get("sessionId")
+    sess = SESSIONS.get(sid)
+    if not sess:
+        return jsonify({"ok": False, "error": "会话已失效，请重新渲染"})
+    if sess.get("engine") != "luau":
+        return jsonify({"ok": False, "error": "交互点击仅支持 luau 引擎"})
+    try:
+        x = float(data.get("x")); y = float(data.get("y"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "坐标无效"})
+    sess.setdefault("clicks", []).append([x, y])
+    d = _render_session(sess)
+    d["sessionId"] = sid
+    d["click"] = {"x": x, "y": y, "count": len(sess["clicks"])}
+    return jsonify(d)
+
+
+@app.post("/api/reset")
+def api_reset():
+    data = request.get_json(silent=True) or {}
+    sid = data.get("sessionId")
+    sess = SESSIONS.get(sid)
+    if not sess:
+        return jsonify({"ok": False, "error": "会话已失效，请重新渲染"})
+    sess["clicks"] = []
+    d = _render_session(sess)
+    d["sessionId"] = sid
+    d["click"] = None
+    return jsonify(d)
 
 
 @app.get("/api/demo")
@@ -236,7 +308,11 @@ def api_demo():
         main_name = "rich_ui.lua"
     elif name == "delta":
         main_name = "DeltaUI.lua"
-    return _render(lib_bytes, main_name, scen_text, engine, viewport, [])
+    d = _render(lib_bytes, main_name, scen_text, engine, viewport, [])
+    if d.get("ok"):
+        d["sessionId"] = _new_session(lib_bytes, main_name, scen_text, engine, viewport, [])
+        d["demo"] = name
+    return jsonify(d)
 
 
 @app.get("/api/health")
@@ -283,6 +359,13 @@ body { height: 100vh; }
 .hint { font-size: 11px; color: #6e7681; line-height: 1.5; }
 .spin { display:none; }
 .busy .spin { display:inline; } .busy .go-txt { display:none; }
+.viewport { cursor: crosshair; }
+.clickmark {
+  position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+  border: 2px solid #58a6ff; border-radius: 50%; background: #58a6ff55;
+  color: #fff; font: 10px/14px ui-monospace, monospace; text-align: center;
+  pointer-events: none; z-index: 99999; box-shadow: 0 0 0 2px #0007;
+}
 </style>
 </head><body>
 <header>
@@ -292,6 +375,7 @@ body { height: 100vh; }
   <button id="zout">−</button><button id="z1">100%</button><button id="zin">＋</button>
   <button id="tbox">边界框</button><button id="tseq">绘制序</button>
   <button id="tx">隐藏文字</button><button id="tbg">浅色底</button>
+  <button id="treset">重置交互</button>
 </header>
 <div class="layout">
   <aside class="panel">
@@ -368,16 +452,69 @@ async function render(payload, isForm){
     const j = await res.json();
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||'渲染失败'))); return; }
-    window.loadReport(j.report);
+    SID = j.sessionId || null; clicks = [];
+    window.loadReport(j.report); drawMarkers();
     $('hstat').textContent = '元素 ' + (j.report.draws||[]).length + ' · 断言 '
       + (j.report.checks?(j.report.checks.pass+'/'+((j.report.checks.pass||0)+(j.report.checks.fail||0))):'-')
-      + ' · 错误 ' + ((j.report.errors||[]).length);
+      + ' · 错误 ' + ((j.report.errors||[]).length)
+      + (SID ? ' · 可点击' : '');
   } catch (e) {
     setLogs('[ERROR] ' + e);
   } finally {
     document.body.classList.remove('busy');
   }
 }
+
+// ---- 交互：点击画布 → 命中测试 + 派发点击 → 重放重渲染 ----
+let SID = null, clicks = [];
+function drawMarkers(){
+  const vp = document.getElementById('vp');
+  clicks.forEach((c, i)=>{
+    const d = document.createElement('div');
+    d.className = 'clickmark';
+    d.style.left = c.x + 'px'; d.style.top = c.y + 'px';
+    d.textContent = (i + 1);
+    vp.appendChild(d);
+  });
+}
+function busy(on){ document.body.classList.toggle('busy', !!on); }
+
+document.getElementById('vp').addEventListener('click', async e=>{
+  if (!SID) { setLogs('当前画面没有可交互会话：请先在左侧上传/渲染（交互需要会话）'); return; }
+  const vp = document.getElementById('vp');
+  const r = vp.getBoundingClientRect();
+  const x = (e.clientX - r.left) / zoom, y = (e.clientY - r.top) / zoom;
+  busy(true); setLogs('点击 (' + Math.round(x) + ',' + Math.round(y) + ') → 命中测试并派发事件…');
+  try {
+    const res = await fetch('/api/click', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ sessionId: SID, x: x, y: y }) });
+    const j = await res.json();
+    if (j.logs) setLogs(colorize(j.logs));
+    if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }
+    clicks.push({x: x, y: y});
+    window.loadReport(j.report); drawMarkers();
+    $('hstat').textContent = '元素 ' + (j.report.draws||[]).length + ' · 已点击 ' + clicks.length + ' 次';
+  } catch(err) { setLogs('[ERROR] ' + err); }
+  finally { busy(false); }
+});
+
+document.getElementById('treset').onclick = async ()=>{
+  if (!SID) return;
+  busy(true);
+  try {
+    const res = await fetch('/api/reset', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ sessionId: SID }) });
+    const j = await res.json();
+    if (j.logs) setLogs(colorize(j.logs));
+    if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }
+    clicks = [];
+    window.loadReport(j.report); drawMarkers();
+    $('hstat').textContent = '已重置交互 · 元素 ' + (j.report.draws||[]).length;
+  } catch(err){ setLogs('[ERROR] ' + err); }
+  finally { busy(false); }
+};
 
 $('go').onclick = () => {
   if (!picked.length) { alert('请先选择 Lua 文件'); return; }
@@ -399,8 +536,10 @@ async function demo(name){
     const j = await res.json();
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }
-    window.loadReport(j.report);
-    $('hstat').textContent = '示例 ' + name + ' · 元素 ' + (j.report.draws||[]).length;
+    SID = j.sessionId || null; clicks = [];
+    window.loadReport(j.report); drawMarkers();
+    $('hstat').textContent = '示例 ' + name + ' · 元素 ' + (j.report.draws||[]).length
+      + (SID ? ' · 可点击' : '');
   } catch(e){ setLogs('[ERROR] ' + e); }
   finally { document.body.classList.remove('busy'); }
 }

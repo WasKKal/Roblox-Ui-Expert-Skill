@@ -379,8 +379,10 @@ local DEFAULT_PROPS = {
     TextWrapped = false,
     TextScaled = false,
     RichText = false,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    TextYAlignment = Enum.TextYAlignment.Top,
+    -- 真机默认：TextLabel/TextButton/TextBox 的 X/Y 对齐都是 Center（此前误设 Left/Top，
+    -- 会让"未显式设置对齐"的文本出现位置偏差）
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextYAlignment = Enum.TextYAlignment.Center,
     TextStrokeTransparency = 1,
     Font = Enum.Font.SourceSans,
     Image = "",
@@ -414,6 +416,9 @@ local CLASS_DEFAULTS = {
     UISizeConstraint = { MaxSize = Vector2.new(1e9, 1e9), MinSize = Vector2.new(0, 0) },
     UITextSizeConstraint = { MaxTextSize = 100, MinTextSize = 1 },
     ScreenGui = { Enabled = true },
+    -- 真机默认：文本/图片类没有背景（透明），只有 Button/Frame 才有可见底色
+    TextLabel = { BackgroundTransparency = 1 },
+    ImageLabel = { BackgroundTransparency = 1 },
 }
 
 local EVENT_KEYS = {

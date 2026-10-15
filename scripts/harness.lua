@@ -12,14 +12,14 @@
 -- ============================================================================
 
 local H = {}
-_G.__HARNESS = H
+__HARNESS = H   -- 裸全局导出（lupa 下写入 _G；luau 下写入共享默认环境）
 
 H.checks = { pass = 0, fail = 0 }
 H.errors = {}          -- 场景运行期错误（Lua 报错/超时/停滞）
 H.snapshots = 0
 
-local M = _G.__MOCK
-local Vision = _G.Vision
+local M = __MOCK
+local Vision = Vision
 
 -- ---------------------------------------------------------------------------
 -- 断言
@@ -81,7 +81,7 @@ end
 -- 编译并运行一段场景源码；返回 {ok=bool, err=?}
 function H.runScenario(src, name, opts)
     name = name or "scenario"
-    local chunk, err = load(src, "@" .. name)
+    local chunk, err = loadstring(src, "@" .. name)
     if not chunk then
         H.errors[#H.errors + 1] = "场景编译失败: " .. tostring(err)
         return { ok = false, err = err }
@@ -193,6 +193,118 @@ end
 function vclockNow() return M.vclock() end
 
 function tweenCount() return #M.tweenLog end
+
+-- ---------------------------------------------------------------------------
+-- 把场景结果序列化到 JSON（供真实 luau 解释器路径的 Python 渲染器读取）
+-- ---------------------------------------------------------------------------
+
+local function jsonValue(v, out)
+    local t = type(v)
+    if t == "nil" then
+        out[#out + 1] = "null"
+    elseif t == "boolean" then
+        out[#out + 1] = v and "true" or "false"
+    elseif t == "number" then
+        if v == math.floor(v) and math.abs(v) < 1e15 then
+            out[#out + 1] = string.format("%d", v)
+        else
+            out[#out + 1] = string.format("%.6g", v)
+        end
+    elseif t == "string" then
+        out[#out + 1] = "\""
+        local s = v
+        for i = 1, #s do
+            local ch = string.sub(s, i, i)
+            local b = string.byte(ch)
+            if ch == "\"" then out[#out + 1] = "\\\""
+            elseif ch == "\\" then out[#out + 1] = "\\\\"
+            elseif ch == "\n" then out[#out + 1] = "\\n"
+            elseif ch == "\t" then out[#out + 1] = "\\t"
+            elseif ch == "\r" then out[#out + 1] = "\\r"
+            elseif b < 32 then out[#out + 1] = string.format("\\u%04x", b)
+            else out[#out + 1] = ch end
+        end
+        out[#out + 1] = "\""
+    elseif t == "table" then
+        -- 数组判定：连续整数键 1..#t
+        local n = #v
+        local isArr = true
+        for k, _ in pairs(v) do
+            if type(k) ~= "number" or k < 1 or k > n or k ~= math.floor(k) then
+                isArr = false; break
+            end
+        end
+        if isArr then
+            out[#out + 1] = "["
+            for i = 1, n do
+                if i > 1 then out[#out + 1] = "," end
+                jsonValue(v[i], out)
+            end
+            out[#out + 1] = "]"
+        else
+            out[#out + 1] = "{"
+            local first = true
+            for k, val in pairs(v) do
+                if type(k) == "string" then
+                    if not first then out[#out + 1] = "," end
+                    first = false
+                    out[#out + 1] = "\"" .. k .. "\":"
+                    jsonValue(val, out)
+                end
+            end
+            out[#out + 1] = "}"
+        end
+    else
+        out[#out + 1] = "null"
+    end
+end
+
+function EmitReport(path)
+    path = path or "report.json"
+    -- 确保画布已生成
+    if not Vision.lastCanvas then Vision.Snapshot("luau_render") end
+    local cv = Vision.encodeCanvas(Vision.lastCanvas)
+    -- 结构树
+    local layout = Vision.computeLayout()
+    local nodes = {}
+    for _, gl in ipairs(layout) do
+        for _, e in ipairs(gl.entries) do
+            local inst = e.inst
+            nodes[#nodes + 1] = {
+                name = inst.Name or "",
+                class = inst.ClassName or "",
+                x = math.floor(e.rect.x + 0.5),
+                y = math.floor(e.rect.y + 0.5),
+                w = math.floor(e.rect.w + 0.5),
+                h = math.floor(e.rect.h + 0.5),
+                z = inst.ZIndex or 1,
+                visible = e.visible ~= false,
+            }
+        end
+    end
+    local report = {
+        engine = "luau",
+        viewport = { w = Vision.viewport.w, h = Vision.viewport.h },
+        cell = { w = cv.cellW, h = cv.cellH },
+        canvas = {
+            cols = cv.cols, rows = cv.rows,
+            colors = cv.colors, glyphs = cv.glyphs, fg = cv.fgs,
+        },
+        structure = nodes,
+        checks = { pass = H.checks.pass, fail = H.checks.fail },
+        errors = H.errors,
+        warnings = M.warnings,
+        tweenCount = #M.tweenLog,
+    }
+    local out = {}
+    jsonValue(report, out)
+    -- 通过 stdout 输出带哨兵的 JSON（真实 luau 解释器禁用了 io 库，
+    -- 故不走文件，而由 Python 启动器从 stdout 抽取）
+    print("\n--ROBLOXUI_JSON_BEGIN--")
+    print(table.concat(out))
+    print("--ROBLOXUI_JSON_END--")
+    return true
+end
 
 -- 汇总输出（由 run_ui.py 在场景结束后调用）
 function H.summary()

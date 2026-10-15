@@ -80,3 +80,43 @@ print(r)
 ```
 
 若报 `unexpected symbol near ...`（如 `continue`、`+=`、`:` 注解），按第二节改写即可。
+
+---
+
+## 五、真实 Luau 解释器路径（`run_ui_luau.py`）
+
+`run_ui_luau.py` 用从源码编译的**官方 luau 解释器**（`cmake` + `make Luau.Repl.CLI`
+得到 `luau`）执行**同一套** `mock_runtime.lua` / `vision.lua` / `harness.lua`，再
+把引擎算出的色彩网格渲染成真实 PNG。两节的区别：**真实 luau 原生支持全 Luau 语法**
+（`+=`、`continue`、类型注解、字符串插值），第二节的转写规则只对 `run_ui.py` 适用。
+
+### 为兼容 luau CLI 的安全限制，模块做了这些适配（对 lupa 无害）
+
+luau CLI 出于沙箱安全，收紧了若干能力，实测结论：
+
+| 限制 | 现象 | 适配 |
+|------|------|------|
+| 禁用 `io` 库 | `io` 为 `nil`，`io.open` 不可用 | 报表不再写文件，改由 stdout 哨兵 `--ROBLOXUI_JSON_BEGIN/END--` 回传 JSON |
+| 禁用 `load` | `load` 为 `nil` | 统一用 `loadstring`；mock 里 `loadstring = load` 加了 `type(load)=="function"` 守卫 |
+| `_G` 只读且与可写全局脱钩 | `_G.X = v` 抛 "readonly table"；裸全局**不**出现在 `_G` | 模块间**只用裸全局名**共享（`__MOCK` / `Vision` / `Harness`），禁止 `_G.X` 读写 |
+| `loadstring` 第 3 个 env 参数被忽略 | 传入的 env 未生效，chunk 仍在默认全局环境 | **弃用自定义 ENV**；多个 `loadstring` 调用本就共享同一默认全局环境 |
+| 标准库表只读 | `math.round = ...` / `string.split = ...` / `table.freeze = ...` 抛错 | 用 `safeSet(lib, k, v)`（`rawget` 判缺失 + `pcall` 包裹写入）注入 shim；luau 原生已有这些函数则跳过 |
+
+### 两个易踩的坑
+
+1. **同名"裸赋值"不会导出全局**：`local Enum = {}` 之后再写 `Enum = Enum`，Luau 会
+   把左侧 `Enum` 解析为**局部变量**，全局 `Enum` 永远建不出来（`_G` 又只读）。
+   正确做法：直接声明 `Enum = {}`（全局），或改用不同名（`__MOCK = M` 就因此正确）。
+2. **跨运行时一致性**：模块源码被 lupa 与真实 luau **共用**，任何改动都要在两边
+   都成立。已验证 `run_ui_luau.py` 与 `run_ui.py` 对同一场景产出的画布**逐字节一致**
+   （PNG md5 相同）。
+
+### 快速自检真实 luau 路径
+
+```bash
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
+  --scenario examples/simple_scenario.lua \
+  --out /tmp/ui_render_luau.png
+# 期望：13/13 通过、0 错误，并生成 /tmp/ui_render_luau.png
+```

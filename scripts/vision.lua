@@ -1059,7 +1059,7 @@ function Vision.Snapshot(label, opts)
     local layout = Vision.computeLayout()
     prepareTexts(layout)
     local ascii, cv = Vision.renderAscii(layout)
-    Vision.lastCanvas = cv          -- 供 PNG 导出（render_png.py）取用
+    Vision.lastCanvas = cv          -- 供文本报告 / 结构树取用
     local cgrid, legend = Vision.renderColorGrid(layout, cv)
     local tree = Vision.describeTree(layout)
 
@@ -1312,8 +1312,15 @@ function Vision.buildDrawList()
                 end
                 if isImage and type(inst.Image) == "string" and inst.Image ~= "" then
                     op.image = true
+                    op.imageRef = inst.Image          -- 原始资源引用，渲染器据此还原图标
                     op.imageColor = colorOf(inst.ImageColor3) or { r = 1, g = 1, b = 1 }
                     op.imageAlpha = (1 - (inst.ImageTransparency or 0)) * ga
+                    -- TileSize：设置了则按平铺绘制（否则拉伸）
+                    local ts = inst.TileSize
+                    if ts and ((ts.X and (ts.X.Offset or 0)) or 0) > 0
+                        and ((ts.Y and (ts.Y.Offset or 0)) or 0) > 0 then
+                        op.tile = { w = ts.X.Offset, h = ts.Y.Offset }
+                    end
                 end
                 if isText then
                     local tc = inst.TextColor3 or { R = 1, G = 1, B = 1 }

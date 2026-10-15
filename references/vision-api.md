@@ -146,15 +146,30 @@ __HARNESS.summary()                         -- 必须，否则报告不汇总
 | `seq` | 绘制序（= 布局 DFS + 同层 ZIndex 排序，等同 Roblox 绘制先后） |
 | `class` / `name` | 类名 / 实例名 |
 | `x,y,w,h` | 绝对矩形（像素） |
+| `zindex` | 实例 ZIndex（调试用；叠加顺序仍以 `seq` 为准） |
+| `rotation` | 旋转角（度，绕元素中心，Roblox `Rotation`） |
 | `clip` | 生效裁剪矩形 `{x,y,w,h}`（父级 ClipsDescendants / ScrollingFrame），无则缺省 |
 | `bg` / `bgAlpha` | 背景色 `{r,g,b}`（0..1）与不透明度（含 CanvasGroup 组透明度） |
 | `corner` | 圆角半径（UICorner，已折算 Scale+Offset） |
-| `stroke` | UIStroke `{thickness, r,g,b, a}`，无则缺省 |
+| `stroke` | UIStroke `{thickness, r,g,b, a, applyMode, lineJoin}`，无则缺省 |
 | `border` | BorderSizePixel `{size, color}`，无则缺省 |
-| `gradient` | UIGradient `{rotation, kps=[{t,r,g,b}...]}`，无则缺省 |
+| `gradient` | UIGradient `{rotation, kps=[{t,r,g,b}...], tr=[{t,v}...]?, ox,oy?}`，无则缺省；`tr` 为 `Transparency` 的 NumberSequence 关键点 |
 | `pad` | UIPadding `{l,r,t,b}`，无则缺省 |
 | `image` / `imageColor` / `imageAlpha` | ImageLabel/ImageButton 占位信息 |
 | `text` / `textColor` / `textAlpha` / `textSize` / `font` / `xa` / `ya` / `wrapped` / `scaled` | 文本样式与对齐（RichText 已剥离标签） |
+| `textStroke` | 文字描边 `{r,g,b,a}`（`TextStrokeTransparency<1` 时存在） |
 
 条目按 `seq` 升序即为正确的叠加顺序（父在子前、同层按 ZIndex）。
 渲染器据此按序做 alpha 合成即可还原画面。
+
+### 已还原的 Roblox 渲染语义
+
+- **布局**：`Scale+Offset` 折算、`AnchorPoint`、`UIListLayout`（含 SortOrder/对齐/间距）、
+  `UIPadding` 收缩内容区、`ClipsDescendants`/`ScrollingFrame` 矩形裁剪、`CanvasGroup` 组透明度向下传递。
+- **绘制序**：DFS + 同层 `(ZIndex, 原始序)` 稳定排序（`ZIndexBehavior.Sibling`）。
+- **样式**：`Color3`、`BackgroundTransparency`、`UICorner`、`UIStroke`、`BorderSizePixel`、
+  `UIGradient`（颜色 + `Transparency` 渐隐 + `Offset`）、`TextStroke`、`Rotation`。
+- **文本**：X/Y 对齐、自动换行、`TextScaled`。
+- **保真修复**：`UIGradient.Color` 以 `ColorSequence` 设置时，此前引擎用 `rawget` 读不到
+  关键点（渐变不生效），已改为经实例索引读取；`Instance.Name` 现按真机语义在未设置时
+  返回类名（此前为 nil，会让 Luau 的 `string.format("%s")` 报错）。

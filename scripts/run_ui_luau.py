@@ -226,6 +226,11 @@ def hires_path(out_path):
     return root + "_hires" + (ext or ".png")
 
 
+def html_path(out_path):
+    root, _ = os.path.splitext(out_path)
+    return root + ".html"
+
+
 def extract_json(stdout_text):
     begin = "--ROBLOXUI_JSON_BEGIN--"
     end = "--ROBLOXUI_JSON_END--"
@@ -251,8 +256,8 @@ def main():
     ap.add_argument("--max-seconds", type=float, default=300.0)
     ap.add_argument("--pump-after", type=float, default=1.0)
     ap.add_argument("--luau", default="", help="luau 可执行路径")
-    ap.add_argument("--style", choices=["grid", "hires", "both"], default="grid",
-                    help="渲染风格：grid=色彩网格(默认)；hires=矢量高清清晰图；both=两者都出")
+    ap.add_argument("--style", choices=["grid", "hires", "html", "both"], default="grid",
+                    help="渲染风格：grid=色彩网格(默认)；hires=矢量高清PNG；html=可交互网页；both=全部")
     ap.add_argument("--scale", type=int, default=2, help="hires 输出放大倍数（默认 2，即 800x600→1600x1200）")
     ap.add_argument("--ss", type=int, default=3, help="hires 超采样倍数（默认 3，越大边缘越平滑）")
     ap.add_argument("--dump-json", default="", help="把引擎报告 JSON 落盘（便于离线重渲染）")
@@ -330,16 +335,24 @@ def main():
             with open(args.dump_json, "w", encoding="utf-8") as f:
                 json.dump(rep, f, ensure_ascii=False)
 
-        if args.style in ("grid", "both"):
+        want = {"grid": ["grid"], "hires": ["hires"], "html": ["html"],
+                "both": ["grid", "hires", "html"]}[args.style]
+
+        if "grid" in want:
             img = render_report(rep, args.out, bg, args.no_glyphs)
             print("[run_ui_luau] 已导出(grid)  %s  (%dx%d px)" % (args.out, img.width, img.height))
-        if args.style in ("hires", "both"):
+        if "hires" in want:
             from render_hires import render_hires
             hp = args.out if args.style == "hires" else hires_path(args.out)
             himg = render_hires(rep, hp, bg=bg, scale=max(1, args.scale),
                                 ss=max(1, args.ss), show_text=not args.no_glyphs)
             print("[run_ui_luau] 已导出(hires) %s  (%dx%d px, 放大 x%d · 超采样 x%d)"
                   % (hp, himg.width, himg.height, max(1, args.scale), max(1, args.ss)))
+        if "html" in want:
+            from render_html import render_html
+            pp = args.out if args.style == "html" else html_path(args.out)
+            render_html(rep, pp, title=os.path.basename(args.scenario))
+            print("[run_ui_luau] 已导出(html)  %s  (可交互预览)" % pp)
 
         checks = rep.get("checks", {})
         fails = int(checks.get("fail", 0))

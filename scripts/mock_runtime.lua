@@ -18,7 +18,7 @@
 -- ============================================================================
 
 local M = {}
-_G.__MOCK = M
+__MOCK = M   -- 裸全局导出（lupa 下写入 _G；luau 下写入共享默认环境）
 
 M.warnings = {}
 function M.warn(msg)
@@ -28,39 +28,46 @@ end
 -- ----------------------------------------------------------------------------
 -- Luau 内建兼容层（Lua 5.x 缺失，但 Luau 脚本/模块普遍使用）
 -- ----------------------------------------------------------------------------
-table.freeze = function(t) return t end
-table.clone = function(t)
+-- 安全设置库表字段：luau CLI 把 math/string/coroutine/table 等标准库表设为【只读表】
+-- （原生已带大部分函数），直接赋值会抛 "attempt to modify a readonly table"。
+-- 用 rawget 判缺失 + pcall 包裹写入：缺失才设置、设置失败则跳过。
+-- lupa（Lua 5.x）下这些表可写，正常补上 shim。
+local function safeSet(lib, k, v)
+    if rawget(lib, k) == nil then
+        pcall(function() lib[k] = v end)
+    end
+end
+safeSet(table, "freeze", function(t) return t end)
+safeSet(table, "clone", function(t)
     if type(t) ~= "table" then return t end
     local c = {}
     for k, v in pairs(t) do c[k] = v end
     local mt = getmetatable(t)
     if mt then setmetatable(c, mt) end
     return c
-end
-if not table.move then
-    table.move = function(a1, f, e, t, a2)
-        a2 = a2 or a1
-        if e >= f then
-            if t > f and t <= e and a1 == a2 then
-                for i = e - f, 0, -1 do a2[t + i] = a1[f + i] end
-            else
-                for i = 0, e - f do a2[t + i] = a1[f + i] end
-            end
+end)
+safeSet(table, "move", function(a1, f, e, t, a2)
+    a2 = a2 or a1
+    if e >= f then
+        if t > f and t <= e and a1 == a2 then
+            for i = e - f, 0, -1 do a2[t + i] = a1[f + i] end
+        else
+            for i = 0, e - f do a2[t + i] = a1[f + i] end
         end
-        return a2
     end
-end
-math.round = function(x) return math.floor(x + 0.5) end
-math.clamp = function(x, lo, hi)
+    return a2
+end)
+safeSet(math, "round", function(x) return math.floor(x + 0.5) end)
+safeSet(math, "clamp", function(x, lo, hi)
     if x < lo then return lo end
     if x > hi then return hi end
     return x
-end
-coroutine.close = function(co)
+end)
+safeSet(coroutine, "close", function(co)
     if coroutine.status(co) == "dead" then return true end
     return false
-end
-string.split = function(s, sep)
+end)
+safeSet(string, "split", function(s, sep)
     sep = sep or ","
     local out = {}
     if s == nil then return out end
@@ -80,20 +87,7 @@ string.split = function(s, sep)
         start = e + 1
     end
     return out
-end
-if not bit32 then
-    bit32 = {
-        band = function(a, b) return a & b end,
-        bor = function(a, b) return a | b end,
-        bxor = function(a, b) return a ~ b end,
-        bnot = function(a) return ~a & 0xFFFFFFFF end,
-        lshift = function(a, n) return (a << n) & 0xFFFFFFFF end,
-        rshift = function(a, n) return (a & 0xFFFFFFFF) >> n end,
-        arshift = function(a, n) return (a & 0xFFFFFFFF) >> n end,
-        extract = function(a, f, w) w = w or 1 return (a >> f) & ((1 << w) - 1) end,
-        replace = function(a, b, f, w) w = w or 1 local m = ((1 << w) - 1) << f return (a & ~m) | ((b << f) & m) end,
-    }
-end
+end)
 
 -- task 调度器状态（前向声明，供 Signal:Wait 直接入队）
 local queue, vclock
@@ -204,9 +198,12 @@ end
 
 -- ============================================================================
 -- Enum
+-- 注意：此处故意【不】用 local，直接声明为全局 Enum。否则末尾 `Enum = Enum`
+-- 这种同名裸赋值会被 Luau 解析为对局部 Enum 的自身赋值，全局 Enum 永远建不出来
+-- （luau CLI 的 _G 又是只读表，不能用 _G.Enum = Enum）。全局 Enum 对 lupa/luau 双运行时都成立。
 -- ============================================================================
 
-local Enum = {}
+Enum = {}
 local function eitem(group, name, value)
     return { Name = name, EnumType = group, Value = value }
 end
@@ -1264,7 +1261,7 @@ M.fs = { files = FS_FILES, dirs = FS_DIRS, reset = function()
     FS_FILES, FS_DIRS = {}, { [""] = true }
 end }
 
-loadstring = load
+if type(load) == "function" then loadstring = load end
 setclipboard = function() M.warn("setclipboard 未模拟") end
 identifyexecutor = function() return "MockRuntime", "1.0" end
 getgenv = function() return M.genv end
@@ -1309,7 +1306,7 @@ M.newSignal = newSignal
 -- Roblox 全局符号导出
 -- ============================================================================
 
-_G.Enum = Enum                  -- Enum.Font / Enum.TextXAlignment / ...
+Enum = Enum                    -- 裸全局导出（供场景脚本使用）
 workspace = Workspace            -- 全局 workspace
 
 -- Luau 的 warn(...)：录制为 mock 警告（真实库的 reportError 走此路径，缺失会炸）
@@ -1325,3 +1322,4 @@ end
 script = { Name = "MockScript", Source = "", GetChildren = function() return {} end }
 
 print("[mock_runtime] Roblox UI 无头运行时就绪")
+return M

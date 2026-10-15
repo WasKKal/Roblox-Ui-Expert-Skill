@@ -162,7 +162,10 @@ __HARNESS.summary()                         -- 必须，否则报告不汇总
 | `border` | BorderSizePixel `{size, color}`，无则缺省 |
 | `gradient` | UIGradient `{rotation, kps=[{t,r,g,b}...], tr=[{t,v}...]?, ox,oy?}`，无则缺省；`tr` 为 `Transparency` 的 NumberSequence 关键点 |
 | `pad` | UIPadding `{l,r,t,b}`，无则缺省 |
-| `image` / `imageColor` / `imageAlpha` | ImageLabel/ImageButton 占位信息 |
+| `image` | 该元素是 ImageLabel/ImageButton 且 `Image` 非空 |
+| `imageRef` | `Image` 原始串（渲染器据此还原图标：lucide 名 / http / 本地路径） |
+| `imageColor` / `imageAlpha` | `ImageColor3` 与不透明度（含组透明度） |
+| `tile` | 设置了 `TileSize` 时为 `{w,h}`（平铺尺寸） |
 | `text` / `textColor` / `textAlpha` / `textSize` / `font` / `xa` / `ya` / `wrapped` / `scaled` | 文本样式与对齐（RichText 已剥离标签） |
 | `textStroke` | 文字描边 `{r,g,b,a}`（`TextStrokeTransparency<1` 时存在） |
 
@@ -183,3 +186,30 @@ __HARNESS.summary()                         -- 必须，否则报告不汇总
 - **保真修复**：`UIGradient.Color` 以 `ColorSequence` 设置时，此前引擎用 `rawget` 读不到
   关键点（渐变不生效），已改为经实例索引读取；`Instance.Name` 现按真机语义在未设置时
   返回类名（此前为 nil，会让 Luau 的 `string.format("%s")` 报错）。
+
+---
+
+## 七、动画帧捕获（多帧）
+
+引擎支持按虚拟时钟间隔采样绘制列表，得到**多帧**，用于导出 APNG 或 HTML 时间轴。
+
+| 全局 | 说明 |
+|------|------|
+| `StartCapture(interval, maxFrames)` | 开始捕获：每 `interval` 虚拟秒记一帧（默认 0.2s / 上限 120 帧） |
+| `StopCapture()` | 停止捕获，返回已捕获帧数 |
+
+实现要点：harness 把 `H.captureTick` 挂到 `mock_runtime` 的**帧钩子** `M.onFrame`
+（每帧末尾调用）。因此捕获覆盖整个时间轴——包括场景结束后的 `--pump-after` 阶段。
+帧上限到达后自动停止，避免长场景内存膨胀。
+
+报告里的字段：
+
+| 字段 | 含义 |
+|------|------|
+| `report.frames` | `[{ t = 虚拟时间, draws = [...] }, ...]` |
+| `report.frameInterval` | 采样间隔（秒） |
+
+对应 CLI：`--capture SEC`（开启）`--max-frames N`（上限）`--anim`（导出 APNG）
+`--fps N`（APNG 播放帧率）。HTML 渲染在 `frames.length > 1` 时自动出现时间轴播放器。
+
+> 前提：补间必须**按时间插值**（本 mock 已实现），否则各帧内容完全相同、动画无意义。

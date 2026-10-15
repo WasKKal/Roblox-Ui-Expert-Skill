@@ -2,7 +2,7 @@
 -- simple_scenario.lua — 简易 UI 绘图自检场景
 -- ==========================================
 -- 用途：加载 examples/simple_ui.lua，搭出一个视觉元素丰富的窗口，
---       打一张快照供 scripts/render_png.py 导出 PNG，并做基础结构断言。
+--       打一张快照做基础结构断言。
 --
 -- 文本报告（Agent 读）：
 --   python3 scripts/run_ui.py \
@@ -10,7 +10,7 @@
 --     --scenario examples/simple_scenario.lua
 --
 -- PNG 图片（人看）：
---   python3 scripts/render_png.py \
+--   python3 scripts/run_ui_luau.py \
 --     --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
 --     --scenario examples/simple_scenario.lua \
 --     --out /workspace/simple_ui_render.png

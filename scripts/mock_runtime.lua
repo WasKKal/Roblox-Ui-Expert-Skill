@@ -89,6 +89,20 @@ safeSet(string, "split", function(s, sep)
     return out
 end)
 
+-- 遗留/执行器全局：Luau 原生自带（unpack/getfenv/setfenv/newproxy/table.getn），
+-- 而 Lua 5.4+ 已移除。仅在缺失时补齐（避免覆盖 Luau 原生实现）。
+if type(unpack) ~= "function" then unpack = table.unpack end
+if type(getfenv) ~= "function" then
+    getfenv = function(_) return _G end          -- lupa 下 _G 即可写全局环境
+end
+if type(setfenv) ~= "function" then
+    setfenv = function(f, _) return f end        -- 近似：不改环境，直接返回
+end
+if type(newproxy) ~= "function" then
+    newproxy = function() return {} end
+end
+safeSet(table, "getn", function(t) return #t end)
+
 -- task 调度器状态（前向声明，供 Signal:Wait 直接入队）
 local queue, vclock
 
@@ -431,6 +445,22 @@ function InstanceMT.__index(self, key)
         local a = rawget(self, "_abs")
         return Vector2.new(a.x, a.y)
     end
+    -- TextBounds：真机文本类有该属性（Vector2，随 Text/TextSize 变化）。
+    -- 无头下按字体 em 系数粗略估算（ASCII≈0.55em，非 ASCII≈1em；行高≈1.2*TextSize）。
+    if key == "TextBounds" then
+        local cls = rawget(self, "ClassName")
+        if cls == "TextLabel" or cls == "TextButton" or cls == "TextBox" then
+            local s = (p and p.Text) or DEFAULT_PROPS.Text or ""
+            local size = (p and p.TextSize) or DEFAULT_PROPS.TextSize or 18
+            local w = 0
+            for ch in s:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+                if string.byte(ch) > 127 then w = w + size else w = w + size * 0.55 end
+            end
+            local lines = 1
+            for _ in s:gmatch("\n") do lines = lines + 1 end
+            return Vector2.new(w, size * 1.2 * lines)
+        end
+    end
     if EVENT_KEYS[key] then
         local evs = rawget(self, "_events")
         if not evs[key] then evs[key] = newSignal() end
@@ -458,14 +488,17 @@ function InstanceMT.__newindex(self, key, value)
         local p = rawget(self, "_props")
         local old = p.Parent
         if old == value then return end
-        if old and old._children then
-            for i, c in ipairs(old._children) do
-                if c == self then table.remove(old._children, i) break end
+        -- 父级可能是"未模拟 service 的 stub"（非真正 Instance），其 _children 未必是表，须守卫
+        local oc = old and rawget(old, "_children")
+        if type(oc) == "table" then
+            for i, c in ipairs(oc) do
+                if c == self then table.remove(oc, i) break end
             end
         end
         p.Parent = value
-        if value and value._children then
-            value._children[#value._children + 1] = self
+        local vc = value and rawget(value, "_children")
+        if type(vc) == "table" then
+            vc[#vc + 1] = self
         end
         local sigs = rawget(self, "_propsigs")
         if sigs.Parent then sigs.Parent:Fire(old) end
@@ -1051,11 +1084,51 @@ local RunService = {
 }
 M.RunService = RunService
 
-local function makeStub(name)
-    return setmetatable({}, {
+-- 通用代理：未模拟字段的兜底。既可被当作函数调用（X() → nil/自身），
+-- 又可被索引（X.MessageOut.Connect(...)）、可 #（长度 0），避免上层库因类型不符而崩。
+-- 注意：原本返回 function 也是"真值"，故改为该代理不改变任何真值性分支判断。
+local universalStub
+do
+    local u
+    u = setmetatable({}, {
+        __call = function(_, ...) return u end,
         __index = function(_, k)
-            M.warn("访问了未深度模拟的 service 字段: " .. name .. "." .. tostring(k))
-            return function() return nil end
+            if k == "Connect" or k == "Once" then return function() return u end end
+            if k == "Wait" then return function() return nil end end
+            if k == "Fire" or k == "Disconnect" or k == "Destroy" then return function() end end
+            return u
+        end,
+        __newindex = function() end,
+        __len = function() return 0 end,
+        __tostring = function() return "Stub" end,
+    })
+    universalStub = u
+end
+
+-- 未模拟 service 的占位对象：尽量表现得像 Instance，避免上层库因字段类型不符而崩。
+-- 关键：暴露真实的 _children 表（Parent 挂接需要），并给出常见的类行为方法。
+local function makeStub(name)
+    local t = {}
+    rawset(t, "_children", {})
+    rawset(t, "ClassName", name)
+    rawset(t, "Name", name)
+    return setmetatable(t, {
+        __index = function(self, k)
+            if k == "Parent" then return nil end
+            if k == "IsA" then return function() return false end end
+            if k == "GetChildren" then return function() return rawget(self, "_children") end end
+            if k == "GetDescendants" then return function() return {} end end
+            if k == "FindFirstChild" or k == "FindFirstChildOfClass" or k == "FindFirstChildWhichIsA" then
+                return function() return nil end
+            end
+            if k == "WaitForChild" then return function() return nil end end
+            if k == "Destroy" then return function() end end
+            -- 未知字段：返回通用代理（支持调用 + 索引 + :Connect 等）
+            return universalStub
+        end,
+        __newindex = function(self, k, v)
+            if k == "Parent" then return end     -- stub 不参与父子树，静默接受
+            rawset(self, k, v)
         end,
     })
 end
@@ -1088,7 +1161,14 @@ Services = {
     PlayerGui = PlayerGui,
     Lighting = makeStub("Lighting"),
     GuiService = makeStub("GuiService"),
-    Stats = makeStub("Stats"),
+    -- Stats：真机带 PerformanceStats（Ping/内存等），上层库常读 Ping 做延迟显示
+    Stats = setmetatable({
+        PerformanceStats = setmetatable({
+            Ping = { GetValue = function() return 42 end },
+            Heartbeat = { GetValue = function() return 16 end },
+        }, { __index = function() return { GetValue = function() return 0 end } end }),
+        GetTotalMemoryUsageMb = function() return 512 end,
+    }, { __index = function() return universalStub end }),
     SoundService = makeStub("SoundService"),
     CollectionService = makeStub("CollectionService"),
     ContentProvider = makeStub("ContentProvider"),

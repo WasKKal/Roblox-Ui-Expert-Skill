@@ -40,9 +40,13 @@ python3 scripts/run_ui_luau.py \
   --scenario examples/rich_scenario.lua \
   --out /workspace/rich.html --style html
 
-# 6) 在线预览：上传任意 .lua 就渲染（浏览器交互）
+# 6) 在线预览：上传任意 .lua 就渲染（浏览器交互；点击画布可触发真实事件）
 python3 scripts/preview_server.py --port 8765
 # 打开 http://127.0.0.1:8765/ ；或 ?demo=simple|rich|delta 直接看内置示例
+# 点击画布 = hitTest 命中测试 + tapUI 派发点击 + 重放重渲染；"重置交互"清空点击序列
+
+# CLI 侧等价的交互：在场景之后按坐标点击（可多次）
+python3 scripts/run_ui_luau.py --lib "..." --scenario s.lua --out o.png --click 25,465 --click 1240,775
 ```
 
 **用真实大型库验证（DeltaUI，475KB）：**

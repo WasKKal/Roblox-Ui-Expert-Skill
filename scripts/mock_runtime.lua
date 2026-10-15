@@ -722,39 +722,143 @@ M.typeof = typeof
 
 local TweenService = {}
 M.tweenLog = {}
+M.activeTweens = {}          -- 进行中的补间（由 stepTweens 每帧推进）
 
-local function makeTween(inst, goal, dur)
+-- 缓动函数：只定义 In 形态，Out/InOut 由 ease() 组合（与真机公式一致）
+local FIN = {
+    Linear = function(u) return u end,
+    Sine = function(u) return 1 - math.cos(u * math.pi / 2) end,
+    Quad = function(u) return u * u end,
+    Cubic = function(u) return u * u * u end,
+    Quart = function(u) return u * u * u * u end,
+    Quint = function(u) return u ^ 5 end,
+    Exponential = function(u)
+        if u <= 0 then return 0 end
+        return 2 ^ (10 * (u - 1))
+    end,
+    Circular = function(u) return 1 - math.sqrt(1 - u * u) end,
+    Back = function(u)
+        local c = 1.70158
+        return c * u * u * u - c * u * u
+    end,
+    Elastic = function(u)
+        if u <= 0 then return 0 end
+        return -(2 ^ (10 * u - 10)) * math.sin((u * 10 - 10.75) * (2 * math.pi / 3))
+    end,
+    Bounce = function(u)
+        local n, d = 7.5625, 2.75
+        if u < 1 / d then return n * u * u end
+        if u < 2 / d then u = u - 1.5 / d return n * u * u + 0.75 end
+        if u < 2.5 / d then u = u - 2.25 / d return n * u * u + 0.9375 end
+        u = u - 2.625 / d
+        return n * u * u + 0.984375
+    end,
+}
+
+local function ease(style, dir, t)
+    if t <= 0 then return 0 end
+    if t >= 1 then return 1 end
+    local fin = FIN[style] or FIN.Quad
+    if dir == "In" then return fin(t) end
+    if dir == "InOut" then
+        if t < 0.5 then return fin(t * 2) * 0.5 end
+        return 1 - fin((1 - t) * 2) * 0.5
+    end
+    return 1 - fin(1 - t)          -- Out（默认）
+end
+
+-- 值插值：支持 number / UDim2 / Vector2 / Color3；其它类型直接取终值
+local function lerpValue(a, b, t)
+    if type(a) == "number" and type(b) == "number" then
+        return a + (b - a) * t
+    end
+    if type(a) == "table" and type(b) == "table" then
+        if type(a.X) == "table" and type(b.X) == "table" and a.X.Offset ~= nil then
+            return UDim2.new(a.X.Scale + (b.X.Scale - a.X.Scale) * t,
+                a.X.Offset + (b.X.Offset - a.X.Offset) * t,
+                a.Y.Scale + (b.Y.Scale - a.Y.Scale) * t,
+                a.Y.Offset + (b.Y.Offset - a.Y.Offset) * t)
+        end
+        if type(a.X) == "number" and type(b.X) == "number" and a.X ~= nil then
+            return Vector2.new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t)
+        end
+        if a.R ~= nil and b.R ~= nil then
+            return Color3.new(a.R + (b.R - a.R) * t, a.G + (b.G - a.G) * t, a.B + (b.B - a.B) * t)
+        end
+    end
+    return b
+end
+
+local function makeTween(inst, goal, dur, style, dir, delay)
     dur = dur or 1 / 60
     if dur <= 0 then dur = 1 / 60 end
+    delay = delay or 0
     local t = {
         _cancelled = false,
-        _done = false,
+        _fired = false,
         Completed = newSignal(),
     }
     function t:Play()
-        if self._done or self._cancelled then return end
-        self._done = true
-        M.tweenLog[#M.tweenLog + 1] = { inst = inst, goal = goal }
-        for k, v in pairs(goal) do
-            local ok, err = pcall(function() inst[k] = v end)
-            if not ok then M.warn("Tween 设置属性失败: " .. tostring(k) .. " -> " .. tostring(err)) end
+        if self._cancelled then return end
+        if self._rec then self._rec.dead = true end        -- 重播：废弃上一段
+        local from = {}
+        for k in pairs(goal) do
+            local ok, v = pcall(function() return inst[k] end)
+            from[k] = ok and v or nil
         end
-        -- 关键：Completed 延迟到补间时长之后（下一帧）再触发，模拟真实补间的耗时。
-        -- 这样库里「先 Play() 再 Completed:Connect()」的惯用法也能正确收到完成事件，
-        -- 否则同步触发会让后续 Connect 的回调永久错过。
-        local d = dur
-        task.delay(d, function()
-            if not self._cancelled then
-                self.Completed:Fire(Enum.PlaybackState.Completed)
-            end
-        end)
+        M.tweenLog[#M.tweenLog + 1] = { inst = inst, goal = goal }
+        local rec = {
+            tween = self, inst = inst, goal = goal, from = from,
+            dur = dur, start = vclock + delay, style = style or "Quad", dir = dir or "Out",
+        }
+        self._rec = rec
+        M.activeTweens[#M.activeTweens + 1] = rec
     end
     function t:Cancel()
         self._cancelled = true
+        if self._rec then self._rec.dead = true end
     end
     function t:Pause() end
     function t:Destroy() end
     return t
+end
+
+-- 每帧推进所有进行中的补间（由 stepFrame 调用）
+function M.stepTweens()
+    local list = M.activeTweens
+    local i = 1
+    while i <= #list do
+        local rec = list[i]
+        if rec.dead then
+            table.remove(list, i)
+        else
+            local span = rec.dur > 0 and rec.dur or (1 / 60)
+            local a = (vclock - rec.start) / span
+            if a < 0 then a = 0 end
+            if a > 1 then a = 1 end
+            local k = ease(rec.style, rec.dir, a)
+            for name, target in pairs(rec.goal) do
+                local v = lerpValue(rec.from[name], target, k)
+                local ok, err = pcall(function() rec.inst[name] = v end)
+                if not ok then
+                    M.warn("Tween 设置属性失败: " .. tostring(name) .. " -> " .. tostring(err))
+                end
+            end
+            if a >= 1 then
+                table.remove(list, i)
+                local tw = rec.tween
+                -- Completed 延迟到下一帧触发：库里「Play() 后紧接 Connect()」是惯用法
+                task.defer(function()
+                    if not tw._cancelled and not tw._fired then
+                        tw._fired = true
+                        tw.Completed:Fire(Enum.PlaybackState.Completed)
+                    end
+                end)
+            else
+                i = i + 1
+            end
+        end
+    end
 end
 
 function TweenService:Create(inst, tweenInfo, goalProps)
@@ -765,10 +869,16 @@ function TweenService:Create(inst, tweenInfo, goalProps)
         M.warn("TweenService:Create 目标属性表为空")
     end
     local dur = 1 / 60
+    local style, dir, delay = "Quad", "Out", 0
     if type(tweenInfo) == "table" then
         dur = tweenInfo.Time or 1 / 60
+        delay = tweenInfo.DelayTime or 0
+        local st = tweenInfo.EasingStyle
+        local dr = tweenInfo.EasingDirection
+        if type(st) == "table" and st.Name then style = st.Name end
+        if type(dr) == "table" and dr.Name then dir = dr.Name end
     end
-    return makeTween(inst, goalProps or {}, dur)
+    return makeTween(inst, goalProps or {}, dur, style, dir, delay)
 end
 M.TweenService = TweenService
 
@@ -853,6 +963,7 @@ M.pumping = false
 local function stepFrame(dt)
     dt = dt or 1 / 60
     vclock = vclock + dt
+    M.stepTweens()                 -- 补间按虚拟时钟插值（先于事件，贴近真机帧序）
     M.frameEvent("RenderStepped", dt, vclock)
     M.frameEvent("Heartbeat", dt, vclock)
     local i = 1
@@ -864,6 +975,8 @@ local function stepFrame(dt)
             i = i + 1
         end
     end
+    -- 帧钩子（harness 用它做动画帧采样；在帧末调用，等价于"这一帧渲染出来的样子"）
+    if M.onFrame then M.onFrame() end
 end
 
 -- 推进一帧（供外部驱动循环逐帧步进）

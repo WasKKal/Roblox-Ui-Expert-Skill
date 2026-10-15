@@ -125,3 +125,29 @@ Heartbeat) / `TextService` / `UserInputService` / `Workspace` / `ReplicatedStora
 > `_G` 写入：真实 luau CLI 的 `_G` 是只读表，但 `getfenv()` 返回同一个**可写**默认全局环境。
 > 因此执行「大量写 `_G` 的库」时，可给源码前置一行 `local _G = (getfenv and getfenv()) or _G`
 > （见 `examples/delta_scenario.lua`），lupa 与 luau 均成立。
+
+---
+
+## 七、贴近真机的文本/样式默认值
+
+真机（Roblox）的属性默认值与"直觉"不同，直接影响文本位置，已按真机修正：
+
+| 属性 | 真机默认 | 之前 mock 的错误值 | 影响 |
+|------|----------|-------------------|------|
+| `TextXAlignment` | `Center` | `Left` | 未显式设置时文本水平位置偏移 |
+| `TextYAlignment` | `Center` | `Top` | **最典型**：文本被顶到上沿而非垂直居中 |
+| `TextLabel.BackgroundTransparency` | `1`（无底色） | `0` | 文本标签会多出一块纯色底 |
+| `ImageLabel.BackgroundTransparency` | `1`（无底色） | `0` | 同上 |
+
+> 排查"渲染出来文字位置和真实 Roblox 对不上"时，先核对这几项默认值。
+
+## 八、文本字体的贴近
+
+渲染侧（HTML / PNG）使用与 Roblox 同源的字体，缩小字宽/行高差异：
+
+- `Enum.Font.SourceSans*` → **Source Sans 3**（Roblox 用的就是 Source Sans 家族）
+- `Enum.Font.Gotham*` → **Inter**（近似 Gotham）
+- 中文（CJK）→ Noto Sans CJK 回退（Roblox 自身也无 CJK 字形，由引擎回退）
+- 字体文件在 `assets/fonts/`（可变字体，一份覆盖全字重）：
+  HTML 以 base64 内嵌为 `@font-face`；PNG 渲染按字符分段选字体
+- 同时修正了字重映射：`*Bold/*Black` 名 → `font-weight:700/900`（此前 HTML 完全没设 font-weight，粗体被渲染成常规体）

@@ -291,6 +291,7 @@ function EmitReport(path)
             colors = cv.colors, glyphs = cv.glyphs, fg = cv.fgs,
         },
         structure = nodes,
+        draws = Vision.buildDrawList(),   -- 矢量绘制列表（高分辨率渲染用）
         checks = { pass = H.checks.pass, fail = H.checks.fail },
         errors = H.errors,
         warnings = M.warnings,

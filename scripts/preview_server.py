@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from render_html import _CSS, _JS  # noqa: E402  复用同一套渲染器
+from render_html import _CSS, _JS, FONT_FACE_CSS  # noqa: E402  复用同一套渲染器
 from run_ui_luau import extract_json  # noqa: E402  复用同一套哨兵 JSON 抽取
 
 app = Flask(__name__)
@@ -576,7 +576,7 @@ demo(q.get('demo') || 'rich');
 
 @app.get("/")
 def index():
-    html = PAGE.replace("__CSS__", _CSS).replace("__JS__", _JS)
+    html = PAGE.replace("__CSS__", FONT_FACE_CSS + "\n" + _CSS).replace("__JS__", _JS)
     return Response(html, mimetype="text/html; charset=utf-8")
 
 

@@ -133,3 +133,28 @@ check("切换生效", tg:GetValue() == false)
 
 __HARNESS.summary()                         -- 必须，否则报告不汇总
 ```
+
+---
+
+## 五、矢量绘制列表 `Vision.buildDrawList()`
+
+供**高分辨率清晰渲染**（`render_hires.py` / `run_ui_luau.py --style hires`）使用。
+返回一个数组，每个元素对应一个可见 GuiObject，含其**精确矩形与完整样式**：
+
+| 字段 | 含义 |
+|------|------|
+| `seq` | 绘制序（= 布局 DFS + 同层 ZIndex 排序，等同 Roblox 绘制先后） |
+| `class` / `name` | 类名 / 实例名 |
+| `x,y,w,h` | 绝对矩形（像素） |
+| `clip` | 生效裁剪矩形 `{x,y,w,h}`（父级 ClipsDescendants / ScrollingFrame），无则缺省 |
+| `bg` / `bgAlpha` | 背景色 `{r,g,b}`（0..1）与不透明度（含 CanvasGroup 组透明度） |
+| `corner` | 圆角半径（UICorner，已折算 Scale+Offset） |
+| `stroke` | UIStroke `{thickness, r,g,b, a}`，无则缺省 |
+| `border` | BorderSizePixel `{size, color}`，无则缺省 |
+| `gradient` | UIGradient `{rotation, kps=[{t,r,g,b}...]}`，无则缺省 |
+| `pad` | UIPadding `{l,r,t,b}`，无则缺省 |
+| `image` / `imageColor` / `imageAlpha` | ImageLabel/ImageButton 占位信息 |
+| `text` / `textColor` / `textAlpha` / `textSize` / `font` / `xa` / `ya` / `wrapped` / `scaled` | 文本样式与对齐（RichText 已剥离标签） |
+
+条目按 `seq` 升序即为正确的叠加顺序（父在子前、同层按 ZIndex）。
+渲染器据此按序做 alpha 合成即可还原画面。

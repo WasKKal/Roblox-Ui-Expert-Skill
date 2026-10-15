@@ -15,9 +15,37 @@ render_html.py — 把引擎绘制列表渲染成【自包含、可交互的 HTM
     python3 render_html.py report.json out.html
 """
 
+import base64
 import html
 import json
 import os
+
+# Roblox 同源字体（assets/fonts 下的可变字体 woff2）内嵌为 data URI，
+# 让浏览器用与 Roblox 一致的字体度量渲染，缩小文本位置/宽度差异。
+_FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "assets", "fonts")
+_FONT_FILES = [
+    ("Source Sans 3", "SourceSans3-400.woff2"),   # ≈ Roblox Enum.Font.SourceSans*
+    ("Inter", "Inter-400.woff2"),                 # ≈ Roblox Enum.Font.Gotham*
+]
+
+
+def _build_font_face_css():
+    out = []
+    for family, fn in _FONT_FILES:
+        p = os.path.join(_FONT_DIR, fn)
+        if not os.path.exists(p):
+            continue
+        with open(p, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        out.append(
+            "@font-face{font-family:'%s';font-style:normal;font-weight:100 900;"
+            "font-display:swap;src:url(data:font/woff2;base64,%s) format('woff2');}"
+            % (family, b64))
+    return "\n".join(out)
+
+
+FONT_FACE_CSS = _build_font_face_css()
 
 
 def _esc_json(obj):
@@ -51,11 +79,11 @@ button {
 }
 button:hover { background: #2b303b; }
 button.on { background: #2f6feb33; border-color: #2f6feb; color: #79c0ff; }
-.stage {
-  flex: 1; padding: 28px; display: flex; align-items: flex-start; justify-content: center;
-  overflow: auto;
-}
-.wrap { transform-origin: top left; }
+/* 用 overflow:auto + auto 外边距居中：视口比舞台大时从左上开始并**可滚动**，
+   不会像 justify-content:center 那样向两侧溢出被裁剪（否则左侧会被面板盖住，
+   导致"点左侧控件无反应"）。 */
+.stage { flex: 1; padding: 20px; overflow: auto; }
+.wrap { margin: 0 auto; position: relative; }
 .viewport {
   position: relative; overflow: hidden;
   background: #0f1115;
@@ -179,8 +207,11 @@ function mkText(op){
   const sp = document.createElement('span');
   sp.textContent = op.text;
   const size = op.textSize||14;
-  sp.style.fontFamily = fontStack(op.font);
+  const fname = op.font || '';
+  sp.style.fontFamily = fontStack(fname);
   sp.style.fontSize = size+'px';
+  // 按 Roblox 字体名映射字重（此前完全没设 font-weight，粗体也渲染成了常规体）
+  sp.style.fontWeight = /Black/.test(fname) ? '900' : (/Bold|Medium/.test(fname) ? '700' : '400');
   sp.style.lineHeight = '1.2';
   sp.style.color = rgba(op.textColor, op.textAlpha==null?1:op.textAlpha);
   sp.style.whiteSpace = op.wrapped ? 'pre-wrap' : 'pre';
@@ -261,13 +292,29 @@ function hideTip(){ tip.style.display='none';
   vp.querySelectorAll('.gui.hl').forEach(e=>e.classList.remove('hl')); }
 
 let zoom = 1;
+let userZoomed = false;                    // 用户手动缩放后不再自动适应
+// 缩放施加在 .viewport 上；外层 .wrap 按缩放后的尺寸撑开，保证滚动区与命中区域一致
 function applyZoom(){
-  document.getElementById('wrap').style.transform = `scale(${zoom})`;
-  document.getElementById('stage').style.minHeight = (V.h*zoom+56)+'px';
+  const wrap = document.getElementById('wrap');
+  const el = document.getElementById('vp');
+  el.style.width = V.w + 'px';
+  el.style.height = V.h + 'px';
+  el.style.transformOrigin = 'top left';
+  el.style.transform = `scale(${zoom})`;
+  wrap.style.width = (V.w * zoom) + 'px';
+  wrap.style.height = (V.h * zoom) + 'px';
 }
-document.getElementById('zin').onclick  = ()=>{ zoom=Math.min(6,zoom+0.25); applyZoom(); };
-document.getElementById('zout').onclick = ()=>{ zoom=Math.max(0.25,zoom-0.25); applyZoom(); };
-document.getElementById('z1').onclick   = ()=>{ zoom=1; applyZoom(); };
+// 自适应：让整个视口完整落在舞台内（避免超大视口被裁剪、点不到左侧）
+function autoFitZoom(){
+  const st = document.getElementById('stage');
+  if (!st) return 1;
+  const availW = st.clientWidth - 44, availH = st.clientHeight - 44;
+  if (availW <= 60 || availH <= 60) return 1;
+  return Math.max(0.2, Math.min(1, availW / V.w, availH / V.h));
+}
+document.getElementById('zin').onclick  = ()=>{ userZoomed=true; zoom=Math.min(6,zoom+0.25); applyZoom(); };
+document.getElementById('zout').onclick = ()=>{ userZoomed=true; zoom=Math.max(0.2,zoom-0.25); applyZoom(); };
+document.getElementById('z1').onclick   = ()=>{ userZoomed=true; zoom=1; applyZoom(); };
 document.getElementById('tbox').onclick = e=>{ vp.classList.toggle('boxes'); e.target.classList.toggle('on'); };
 document.getElementById('tseq').onclick = e=>{ vp.classList.toggle('badges'); e.target.classList.toggle('on'); };
 document.getElementById('tx').onclick   = e=>{
@@ -289,11 +336,12 @@ function loadReport(rep) {
   vp.innerHTML = '';
   hideTip();
   build();
+  if (!userZoomed) zoom = autoFitZoom();
   applyZoom();
 }
 window.loadReport = loadReport;
 
-if (typeof REPORT_DATA !== 'undefined' && REPORT_DATA) { build(); applyZoom(); }
+if (typeof REPORT_DATA !== 'undefined' && REPORT_DATA) { build(); zoom = autoFitZoom(); applyZoom(); }
 """
 
 
@@ -340,7 +388,7 @@ def render_html(report, out_path, title="Roblox UI"):
         "<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         "<title>" + html.escape(title) + "</title>\n"
-        "<style>" + _CSS + "</style>\n</head>\n<body>\n"
+        "<style>" + FONT_FACE_CSS + "\n" + _CSS + "</style>\n</head>\n<body>\n"
         + _header(meta) +
         "\n<div class=\"stage\" id=\"stage\"><div class=\"wrap\" id=\"wrap\">"
         "<div class=\"viewport\" id=\"vp\"></div></div></div>\n"

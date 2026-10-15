@@ -1078,5 +1078,117 @@ function Vision.findFirstOfClass(className)
     return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- 矢量绘制列表（供高分辨率 PNG 渲染器 render_hires.py 使用）
+-- 与 ASCII/色彩网格不同：这里输出【每个 GuiObject 的精确矩形 + 完整样式】，
+-- 让 Python 侧以超采样 + 真实字体矢量绘制出清晰锐利的 UI 图。
+-- 条目顺序 = 布局 DFS + 同层 (ZIndex, 原始序) 排序 = Roblox 绘制先后。
+-- ---------------------------------------------------------------------------
+local function colorOf(c)
+    if type(c) ~= "table" then return nil end
+    return { r = c.R or 0, g = c.G or 0, b = c.B or 0 }
+end
+
+local function cornerOf(decor, rect)
+    local corner = findDecor(decor, "UICorner")
+    if not corner then return 0 end
+    local cr = corner.CornerRadius
+    if type(cr) == "table" then
+        return (cr.Scale or 0) * math.min(rect.w, rect.h) + (cr.Offset or 0)
+    end
+    return 0
+end
+
+local function gradInfo(decor)
+    local grad = findDecor(decor, "UIGradient")
+    if not grad or grad.Enabled == false then return nil end
+    local kps = rawget(grad, "keypoints")
+    if not kps or #kps == 0 then return nil end
+    local out = { rotation = grad.Rotation or 0, kps = {} }
+    for _, kp in ipairs(kps) do
+        local c = kp.Value or kp.Color
+        out.kps[#out.kps + 1] = {
+            t = kp.Time or 0,
+            r = c and c.R or 0, g = c and c.G or 0, b = c and c.B or 0,
+        }
+    end
+    if #out.kps == 0 then return nil end
+    return out
+end
+
+local function strokeInfo(decor, ga)
+    local stroke = findDecor(decor, "UIStroke")
+    if not stroke or (stroke.Thickness or 0) <= 0 then return nil end
+    local a = (1 - (stroke.Transparency or 0)) * ga
+    if a <= 0.02 then return nil end
+    local c = stroke.Color or { R = 0, G = 0, B = 0 }
+    return { thickness = stroke.Thickness or 0, a = a, r = c.R or 0, g = c.G or 0, b = c.B or 0 }
+end
+
+local function padInfo(decor)
+    local pad = findDecor(decor, "UIPadding")
+    if not pad then return nil end
+    return {
+        l = pad.PaddingLeft.Offset, r = pad.PaddingRight.Offset,
+        t = pad.PaddingTop.Offset, b = pad.PaddingBottom.Offset,
+    }
+end
+
+function Vision.buildDrawList()
+    local layout = Vision.computeLayout()
+    local ops = {}
+    local seq = 0
+    for _, gl in ipairs(layout) do
+        for _, e in ipairs(gl.entries) do
+            local inst = e.inst
+            if e.visible and e.rect.w > 0.001 and e.rect.h > 0.001 then
+                seq = seq + 1
+                local ga = e.groupAlpha or 1
+                local cls = inst.ClassName or ""
+                local isText = (cls == "TextLabel" or cls == "TextButton" or cls == "TextBox")
+                local isImage = (cls == "ImageLabel" or cls == "ImageButton")
+                local op = {
+                    seq = seq, class = cls, name = inst.Name or "",
+                    x = e.rect.x, y = e.rect.y, w = e.rect.w, h = e.rect.h,
+                    clip = e.clip,
+                    bgAlpha = (1 - (inst.BackgroundTransparency or 0)) * ga,
+                    bg = colorOf(inst.BackgroundColor3),
+                    corner = cornerOf(e.decor, e.rect),
+                    stroke = strokeInfo(e.decor, ga),
+                    gradient = gradInfo(e.decor),
+                    pad = padInfo(e.decor),
+                }
+                if (inst.BorderSizePixel or 0) > 0 then
+                    op.border = {
+                        size = inst.BorderSizePixel,
+                        color = colorOf(inst.BorderColor3) or { r = 0, g = 0, b = 0 },
+                    }
+                end
+                if isImage and type(inst.Image) == "string" and inst.Image ~= "" then
+                    op.image = true
+                    op.imageColor = colorOf(inst.ImageColor3) or { r = 1, g = 1, b = 1 }
+                    op.imageAlpha = (1 - (inst.ImageTransparency or 0)) * ga
+                end
+                if isText then
+                    local tc = inst.TextColor3 or { R = 1, G = 1, B = 1 }
+                    local txt = tostring(inst.Text or "")
+                    if inst.RichText then txt = stripTags(txt) end
+                    op.text = txt
+                    op.textColor = { r = tc.R or 0, g = tc.G or 0, b = tc.B or 0 }
+                    op.textAlpha = (1 - (inst.TextTransparency or 0)) * ga
+                    op.textSize = inst.TextSize or 14
+                    op.font = enumName(inst.Font) or "SourceSans"
+                    op.xa = enumName(inst.TextXAlignment) or "Left"
+                    op.ya = enumName(inst.TextYAlignment) or "Top"
+                    op.wrapped = inst.TextWrapped and true or false
+                    op.scaled = inst.TextScaled and true or false
+                end
+                ops[#ops + 1] = op
+            end
+        end
+    end
+    return ops
+end
+
 Vision.DECOR_CLASSES = DECOR_CLASSES
 return Vision

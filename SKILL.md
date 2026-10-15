@@ -181,21 +181,27 @@ DOM+CSS 渲染器**渲染。页面提供：引擎切换（luau / lupa）、视�
 > 用 DeltaUI 可直观验证：点左侧导航按钮切换页面（如 `--click 25,465` 进入"设置/Settings"，
 > 元素数 73 → 250），点"重置交互"回到初始页。
 
-**映射到公网**（让外部可访问；沙箱无 cloudflared，用 SSH 反向隧道最省事）：
+**映射到公网**（沙箱无 cloudflared，用 SSH 反向隧道最省事）：
 
 ```bash
 # 1) 带访问令牌启动（公网暴露务必加令牌：上传的 Lua 会在本机被执行）
 python3 scripts/preview_server.py --port 8765 --token auto     # 或 --token 你的口令
 
-# 2) 建隧道（localhost.run 免费、无需账号；也可换成 serveo.net）
-ssh -o StrictHostKeyChecking=no -T -R 80:localhost:8765 nokey@localhost.run
-#   输出形如：https://xxxxxxxxxxxx.lhr.life tunneled with tls termination
-
-# 3) 外部访问： https://xxxxxxxxxxxx.lhr.life/?k=<token>
+# 2) 隧道守护：自动连接 + 断线重连 + 地址实测可用后才发布
+python3 scripts/public_tunnel.py --port 8765 --token <token>
+#   输出：“[tunnel] ✅ 公网地址: https://xxxx.lhr.life/?k=<token>”
+#   最新地址同时写入 /workspace/PUBLIC_URL.txt（可随时读取）
 ```
 
+`public_tunnel.py` 用 localhost.run / serveo.net（均免费、无需账号），并做了三件事：
+建立 SSH 反向隧道（`-R 80:localhost:<port>`）、从输出解析公网地址、**实测 `?k=<token>` 的
+`/api/health` 返回 200 后才发布**；隧道断开自动重连并刷新地址文件。
+
 安全提示：`--token` 会拦截所有未携带 `?k=<token>` 的请求（API 返回 403、页面返回提示页）。
-免费隧道域名是**临时**的，SSH 断开或沙箱休眠后会失效，重连通常换新域名。
+免费隧道域名是**临时**的，SSH 断开或沙箱休眠后会失效——守护脚本会自动换新域名。
+要**固定域名**需注册服务账号：serveo 支持自定义子域，但需先用 GitHub/Google 登录
+`https://console.serveo.net/ssh/keys` 注册本机公钥，然后
+`python3 scripts/public_tunnel.py --engine serveo --identity ~/.ssh/serveo_key --subdomain <名字>`。
 
 ## 场景脚本怎么写
 

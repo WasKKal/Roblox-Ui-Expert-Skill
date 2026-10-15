@@ -24,24 +24,35 @@ run_ui_luau.py — 用【真实 Luau 解释器】执行 UI 代码并渲染出 PN
 参数：
     --lib URL=PATH    把场景里 game:HttpGet(URL) 映射到本地文件（可多次）
     --scenario FILE   场景脚本（必填）
-    --out FILE        输出 PNG 路径（默认 ./ui_render_luau.png）
+    --out FILE        输出路径（默认 ./ui_render_luau.png）
     --viewport WxH    视口像素，默认 800x600
-    --cell WxH        网格单元格像素，默认 8x16
     --bg COLOR        画布背景色 #RRGGBB，默认 #0F1115
-    --no-glyphs       不绘制字符（只出纯色块，更接近真实 UI）
-    --style S         grid=色彩网格(默认) | hires=矢量高清清晰图 | both=两者都出
-    --scale N         hires 输出放大倍数（默认 2：800x600→1600x1200）
-    --ss N            hires 超采样倍数（默认 3，越大边缘越平滑）
+    --no-glyphs       不绘制文字（只看几何与图标）
+    --style S         hires=矢量高清 PNG(默认) | html=可交互网页 | both=两者
+    --scale N         输出放大倍数（默认 2：800x600→1600x1200）
+    --ss N            超采样倍数（默认 3，越大边缘越平滑）
+    --capture SEC     动画：按该间隔（虚拟秒）采样帧，0=关闭（例：--capture 0.1）
+    --max-frames N    动画帧上限（默认 120）
+    --anim            额外导出 APNG 动画（配合 --capture）
+    --fps N           APNG 播放帧率，0=按采样间隔推算
+    --offline         不联网获取图标资源（只用本地 assets/icons 缓存）
+    --click X,Y       场景后在该点命中并派发点击（可多次），用于交互式重渲染
     --dump-json FILE  把引擎报告 JSON 落盘（可用 render_hires.py 离线重渲染）
     --max-seconds N   场景最大虚拟秒数，默认 300
     --pump-after N    场景结束后额外推进的虚拟秒数，默认 1
     --luau PATH       luau 可执行路径（默认自动探测）
 退出码：0 = 全部通过；1 = 有失败断言或运行错误；2 = 用法/加载/解释器错误
 
-清晰渲染示例：
-    python3 run_ui_luau.py --lib "URL=examples/simple_ui.lua" \
-        --scenario examples/simple_scenario.lua \
-        --out /workspace/ui_clear.png --style hires --scale 2
+示例：
+    # 高清 PNG（+ 可交互 HTML）
+    python3 run_ui_luau.py --lib "URL=examples/rich_ui.lua" \
+        --scenario examples/rich_scenario.lua \
+        --out /workspace/ui.png --style both --scale 2
+
+    # 动画：每 0.1 虚拟秒采一帧，导出 APNG（HTML 自带时间轴播放器）
+    python3 run_ui_luau.py --lib "URL=examples/anim_ui.lua" \
+        --scenario examples/anim_scenario.lua \
+        --out /workspace/anim.png --style both --capture 0.1 --anim
 """
 
 import argparse
@@ -55,12 +66,6 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = ["mock_runtime.lua", "vision.lua", "harness.lua"]
-MONO_FONTS = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-]
 
 # Luau 侧：base64 解码器 + loadsrc
 # 关键发现（实测）：
@@ -153,73 +158,6 @@ def hex_to_rgb(s):
     return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def load_mono_font(size):
-    from PIL import ImageFont
-    for p in MONO_FONTS:
-        if os.path.exists(p):
-            try:
-                return ImageFont.truetype(p, size)
-            except Exception:
-                pass
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()
-
-
-def render_report(rep, out_path, bg, no_glyphs):
-    from PIL import Image, ImageDraw
-    cv = rep["canvas"]
-    cols, rows = int(cv["cols"]), int(cv["rows"])
-    cell_w, cell_h = int(cv.get("cell", {}).get("w", 8)), int(cv.get("cell", {}).get("h", 16))
-    colors = str(cv["colors"])
-    glyphs = str(cv.get("glyphs", ""))
-    fgs = str(cv.get("fg", ""))
-
-    img = Image.new("RGB", (cols * cell_w, rows * cell_h), bg)
-    drw = ImageDraw.Draw(img)
-    font = None if no_glyphs else load_mono_font(max(6, int(cell_h * 0.78)))
-
-    n = cols * rows
-    for i in range(n):
-        r = int(colors[i * 8:i * 8 + 2], 16)
-        gg = int(colors[i * 8 + 2:i * 8 + 4], 16)
-        b = int(colors[i * 8 + 4:i * 8 + 6], 16)
-        a = int(colors[i * 8 + 6:i * 8 + 8], 16)
-        if a == 0:
-            continue
-        f = a / 255.0
-        pr = int(r * f + bg[0] * (1 - f))
-        pg = int(gg * f + bg[1] * (1 - f))
-        pb = int(b * f + bg[2] * (1 - f))
-        row, col = divmod(i, cols)
-        x0, y0 = col * cell_w, row * cell_h
-        drw.rectangle([x0, y0, x0 + cell_w - 1, y0 + cell_h - 1], fill=(pr, pg, pb))
-
-        if font is not None and i * 8 + 8 <= len(fgs):
-            fa = int(fgs[i * 8 + 6:i * 8 + 8], 16)
-            if fa > 8:
-                fr = int(fgs[i * 8:i * 8 + 2], 16)
-                fgc = int(fgs[i * 8 + 2:i * 8 + 4], 16)
-                fb = int(fgs[i * 8 + 4:i * 8 + 6], 16)
-                ch_ = glyphs[i] if i < len(glyphs) else " "
-                if ch_ and ch_ != " ":
-                    ff = fa / 255.0
-                    tfr = int(fr * ff + pr * (1 - ff))
-                    tfg = int(fgc * ff + pg * (1 - ff))
-                    tfb = int(fb * ff + pb * (1 - ff))
-                    try:
-                        drw.text((x0 + cell_w / 2, y0 + cell_h / 2), ch_,
-                                 font=font, fill=(tfr, tfg, tfb), anchor="mm")
-                    except Exception:
-                        pass
-
-    out_dir = os.path.dirname(os.path.abspath(out_path))
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    img.save(out_path, "PNG")
-    return img
-
 
 def hires_path(out_path):
     root, ext = os.path.splitext(out_path)
@@ -229,6 +167,12 @@ def hires_path(out_path):
 def html_path(out_path):
     root, _ = os.path.splitext(out_path)
     return root + ".html"
+
+
+def anim_path(out_path):
+    """APNG 也用 .png 扩展名（浏览器/看图器识别为动画 PNG）。"""
+    root, _ = os.path.splitext(out_path)
+    return root + "_anim.png"
 
 
 def extract_json(stdout_text):
@@ -250,16 +194,23 @@ def main():
     ap.add_argument("--scenario", required=True, help="场景脚本路径")
     ap.add_argument("--out", default="./ui_render_luau.png", help="输出 PNG 路径")
     ap.add_argument("--viewport", default="800x600")
-    ap.add_argument("--cell", default="8x16")
     ap.add_argument("--bg", default="#0F1115", help="画布背景色 #RRGGBB")
-    ap.add_argument("--no-glyphs", action="store_true", help="不绘制字符，只出纯色块")
+    ap.add_argument("--no-glyphs", action="store_true", help="不绘制文字（只看几何与图标）")
     ap.add_argument("--max-seconds", type=float, default=300.0)
     ap.add_argument("--pump-after", type=float, default=1.0)
     ap.add_argument("--luau", default="", help="luau 可执行路径")
-    ap.add_argument("--style", choices=["grid", "hires", "html", "both"], default="grid",
-                    help="渲染风格：grid=色彩网格(默认)；hires=矢量高清PNG；html=可交互网页；both=全部")
+    ap.add_argument("--style", choices=["none", "hires", "html", "both"], default="hires",
+                    help="渲染风格：hires=矢量高清 PNG（默认）；html=可交互网页；both=两者；"
+                         "none=只出引擎报告（供集成方取 draws，最快）")
     ap.add_argument("--scale", type=int, default=2, help="hires 输出放大倍数（默认 2，即 800x600→1600x1200）")
     ap.add_argument("--ss", type=int, default=3, help="hires 超采样倍数（默认 3，越大边缘越平滑）")
+    ap.add_argument("--capture", type=float, default=0.0,
+                    help="动画：按该间隔（虚拟秒）采样绘制帧，0=关闭（例：--capture 0.1）")
+    ap.add_argument("--max-frames", type=int, default=120, help="动画帧上限（默认 120）")
+    ap.add_argument("--anim", action="store_true", help="额外导出 APNG 动画（需配合 --capture）")
+    ap.add_argument("--fps", type=float, default=0.0, help="APNG 播放帧率，0=按采样间隔推算")
+    ap.add_argument("--offline", action="store_true",
+                    help="不联网获取图标资源（只用本地 assets/icons 缓存）")
     ap.add_argument("--dump-json", default="", help="把引擎报告 JSON 落盘（便于离线重渲染）")
     ap.add_argument("--click", action="append", default=[],
                     help="X,Y：场景结束后依次在该点做命中测试并派发点击（可多次），用于交互式重渲染")
@@ -267,11 +218,17 @@ def main():
 
     try:
         vw, vh = (int(x) for x in args.viewport.lower().split("x"))
-        cw, ch = (int(x) for x in args.cell.lower().split("x"))
     except ValueError:
-        fail("--viewport/--cell 格式应为 WxH")
-    if vw <= 0 or vh <= 0 or cw <= 0 or ch <= 0:
-        fail("视口与网格必须为正数")
+        fail("--viewport 格式应为 WxH")
+    if vw <= 0 or vh <= 0:
+        fail("视口必须为正数")
+
+    if args.offline:
+        try:
+            import icons
+            icons._LUCIDE_SOURCES = ()       # 关闭在线补充
+        except Exception:
+            pass
 
     if not os.path.exists(args.scenario):
         fail("场景文件不存在: " + args.scenario)
@@ -319,20 +276,28 @@ def main():
                 "end\n" % ",".join(click_items)
             )
 
+        # 动画捕获：按虚拟时钟间隔采样绘制帧（必须在场景开始前启动）
+        capture_line = ""
+        if args.capture > 0:
+            capture_line = "StartCapture(%r, %d)\n" % (args.capture, max(2, args.max_frames))
+
         main_src = (
             LUAU_HEADER
+            + ("__EMIT_STRUCTURE = true\n" if args.dump_json else "")
             + "\nloadsrc([[mock_runtime.lua]], [[%s]])\n" % mod_b64["mock_runtime.lua"]
             + "Vision = loadsrc([[vision.lua]], [[%s]])\n" % mod_b64["vision.lua"]
             + "Harness = loadsrc([[harness.lua]], [[%s]])\n" % mod_b64["harness.lua"]
             + "Vision.viewport = { w = %d, h = %d }\n" % (vw, vh)
-            + "Vision.cell = { w = %d, h = %d }\n" % (cw, ch)
+            + "Vision.cell = { w = 8, h = 16 }\n"
             + "\n".join(reg_lines) + "\n"
+            + capture_line
             + "Harness.runScenario(b64decode([[%s]]), [[%s]], { maxSeconds = %s })\n"
               % (b64(scenario_src), os.path.basename(args.scenario), repr(args.max_seconds))
             + click_lines
             + "if Harness.snapshots == 0 then Snapshot([[结束状态]]) end\n"
             + "if %s > 0 then __MOCK.pumpSeconds(%s) end\n"
               % (repr(args.pump_after), repr(args.pump_after))
+            + "StopCapture()\n"
             + "Harness.summary()\n"
             + "EmitReport([[dummy]])\n"
         )
@@ -341,8 +306,8 @@ def main():
             f.write(main_src)
 
         print("[run_ui_luau] 使用解释器: %s" % luau)
-        print("[run_ui_luau] 视口 %dx%d  网格 %dx%d  库 %d 个  场景 %s"
-              % (vw, vh, cw, ch, len(libs), os.path.basename(args.scenario)))
+        print("[run_ui_luau] 视口 %dx%d  库 %d 个  场景 %s"
+              % (vw, vh, len(libs), os.path.basename(args.scenario)))
 
         proc = subprocess.run([luau, main_path], capture_output=True, text=True)
         if proc.stdout:
@@ -359,24 +324,32 @@ def main():
             with open(args.dump_json, "w", encoding="utf-8") as f:
                 json.dump(rep, f, ensure_ascii=False)
 
-        want = {"grid": ["grid"], "hires": ["hires"], "html": ["html"],
-                "both": ["grid", "hires", "html"]}[args.style]
+        frames = rep.get("frames") or []
+        if frames:
+            print("[run_ui_luau] 动画帧 %d（采样间隔 %.2fs）"
+                  % (len(frames), float(rep.get("frameInterval", 0.2))))
 
-        if "grid" in want:
-            img = render_report(rep, args.out, bg, args.no_glyphs)
-            print("[run_ui_luau] 已导出(grid)  %s  (%dx%d px)" % (args.out, img.width, img.height))
-        if "hires" in want:
+        if args.style in ("hires", "both"):
             from render_hires import render_hires
             hp = args.out if args.style == "hires" else hires_path(args.out)
             himg = render_hires(rep, hp, bg=bg, scale=max(1, args.scale),
                                 ss=max(1, args.ss), show_text=not args.no_glyphs)
             print("[run_ui_luau] 已导出(hires) %s  (%dx%d px, 放大 x%d · 超采样 x%d)"
                   % (hp, himg.width, himg.height, max(1, args.scale), max(1, args.ss)))
-        if "html" in want:
+            if args.anim and len(frames) > 1:
+                from render_hires import render_apng
+                ap = anim_path(hp)
+                aimg = render_apng(rep, ap, bg=bg, scale=max(1, args.scale),
+                                   ss=max(1, args.ss), show_text=not args.no_glyphs,
+                                   fps=args.fps)
+                print("[run_ui_luau] 已导出(apng)  %s  (%dx%d px, %d 帧)"
+                      % (ap, aimg.width, aimg.height, len(frames)))
+        if args.style in ("html", "both"):
             from render_html import render_html
             pp = args.out if args.style == "html" else html_path(args.out)
             render_html(rep, pp, title=os.path.basename(args.scenario))
-            print("[run_ui_luau] 已导出(html)  %s  (可交互预览)" % pp)
+            print("[run_ui_luau] 已导出(html)  %s  (可交互预览%s)"
+                  % (pp, "，含动画时间轴" if len(frames) > 1 else ""))
 
         checks = rep.get("checks", {})
         fails = int(checks.get("fail", 0))

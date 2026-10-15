@@ -40,8 +40,9 @@ Roblox-Ui-Expert-Skill/
 │   ├── vision.lua            # 布局引擎 + 渲染器：算绝对矩形、输出结构树/ASCII/色彩网格
 │   ├── harness.lua           # 场景驱动：check/pump/tapUI/fireUI/Snapshot 等全局
 │   ├── run_ui.py             # CLI（lupa/Lua 5.5 路径）：运行场景 + 产出快照与断言报告
-│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：跑 Luau 引擎并渲染真实 PNG
-│   └── render_png.py         # 把色彩网格渲染成高清 PNG（真实像素图）
+│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：跑 Luau 引擎并渲染 PNG
+│   ├── render_png.py         # 色彩网格 → PNG（逐格放大，粗）
+│   └── render_hires.py       # 矢量高清渲染：圆角/渐变/描边/真实字体文本 → 清晰 PNG
 ├── examples/
 │   ├── demo_ui.lua           # 自包含演示 UI（淡入 / Tab / 各类控件 / 提示）
 │   ├── demo_scenario.lua     # 演示场景：13 条断言 + 3 张快照
@@ -109,7 +110,27 @@ python3 scripts/run_ui_luau.py \
 | `--output FILE` | 把报告 Tee 落盘 |
 
 `run_ui_luau.py` 额外参数：`--out FILE`（PNG 路径）、`--bg #RRGGBB`（画布底色）、
-`--no-glyphs`（只出纯色块，更接近真实 UI）、`--luau PATH`（指定解释器）。
+`--no-glyphs`（不绘文字）、`--luau PATH`（指定解释器）。
+
+**要「清晰」的图，用矢量高清渲染（`--style hires`）：**
+
+```bash
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
+  --scenario examples/simple_scenario.lua \
+  --out /workspace/ui_clear.png --style hires --scale 2 --ss 3
+# 产出 1600x1200 清晰 PNG：圆角/渐变/描边/真实字体的中文文本
+```
+
+对比：
+
+| 渲染方式 | 原理 | 观感 |
+|----------|------|------|
+| `--style grid`（默认） | 彩色字符网格逐格放大 | 粗；文字被当整格填充，只适合快速看轮廓 |
+| `--style hires` | 消费每个元素的**精确矩形 + 完整样式**，用 PIL 以**超采样 + 真实 CJK 字体**矢量绘制 | 清晰锐利：圆角、渐变、描边、可读中文、开关/滑块/进度条 |
+
+`--scale N` 控制输出放大（视口 ×N）；`--ss N` 控制超采样倍数（内部按 ×ss 绘制再降采样抗锯齿）。
+也可 `--dump-json report.json` 落盘引擎报告，再用 `python3 scripts/render_hires.py report.json out.png 2 3` 离线重渲染。
 
 ## 场景脚本怎么写
 

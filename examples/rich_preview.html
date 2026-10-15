@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rich_scenario.lua</title>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #14161b;
+  color: #c9d1d9;
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  min-height: 100vh;
+  display: flex; flex-direction: column;
+}
+header {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 16px; background: #1b1e25; border-bottom: 1px solid #2b303b;
+  position: sticky; top: 0; z-index: 9999;
+}
+header .title { font-weight: 700; font-size: 14px; color: #e6edf3; }
+header .meta { font-size: 12px; color: #8b949e; }
+header .ok { color: #3fb950; } header .bad { color: #f85149; }
+header .spacer { flex: 1; }
+button {
+  background: #22262e; color: #c9d1d9; border: 1px solid #313744; border-radius: 6px;
+  padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+}
+button:hover { background: #2b303b; }
+button.on { background: #2f6feb33; border-color: #2f6feb; color: #79c0ff; }
+.stage {
+  flex: 1; padding: 28px; display: flex; align-items: flex-start; justify-content: center;
+  overflow: auto;
+}
+.wrap { transform-origin: top left; }
+.viewport {
+  position: relative; overflow: hidden;
+  background: #0f1115;
+  box-shadow: 0 24px 64px rgba(0,0,0,.55);
+  outline: 1px solid #2b303b;
+}
+.gui { position: absolute; }
+.gui.hl { outline: 2px solid #58a6ff !important; outline-offset: 0; }
+.badges .gui[data-name]::after {
+  content: attr(data-badge); position: absolute; left: 0; top: 0;
+  transform: translateY(-100%); background: #2f6feb; color: #fff;
+  font: 10px/1.4 ui-monospace, monospace; padding: 0 4px; border-radius: 3px 3px 0 0;
+  pointer-events: none; white-space: nowrap;
+}
+.boxes .gui { outline: 1px dashed rgba(88,166,255,.35); }
+.txt {
+  width: 100%; height: 100%; display: flex; overflow: hidden;
+}
+.txt > span { display: block; width: 100%; }
+#tip {
+  position: fixed; pointer-events: none; z-index: 100000; display: none;
+  background: #0d1117f2; border: 1px solid #30363d; border-radius: 6px;
+  padding: 6px 9px; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #c9d1d9; white-space: pre; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+}
+</style>
+</head>
+<body>
+<header><span class="title">Roblox UI 预览</span><span class="meta">引擎 <b>luau</b></span><span class="meta">视口 800x600</span><span class="meta">元素 <b>29</b></span><span class="meta ok">断言 16/16 · 错误 0</span><span class="spacer"></span><button id="zout">−</button><button id="z1">100%</button><button id="zin">＋</button><button id="tbox">边界框</button><button id="tseq">绘制序</button><button id="tx">隐藏文字</button><button id="tbg">浅色底</button></header>
+<div class="stage" id="stage"><div class="wrap" id="wrap"><div class="viewport" id="vp"></div></div></div>
+<div id="tip"></div>
+<script>const REPORT={"viewport":{"w":800,"h":600},"draws":[{"bgAlpha":1,"corner":0,"class":"Frame","w":800,"bg":{"b":0.0901961,"g":0.0666667,"r":0.0588235},"y":0,"x":0,"name":"Backdrop","rotation":0,"zindex":1,"seq":1,"h":600},{"stroke":{"thickness":2,"applyMode":"Contextual","r":0.227451,"lineJoin":"Round","b":0.313725,"g":0.25098,"a":0.85},"bgAlpha":1,"corner":18,"class":"Frame","w":620,"bg":{"b":0.141176,"g":0.105882,"r":0.0941176},"y":65,"x":90,"name":"RichWindow","rotation":0,"zindex":1,"seq":2,"h":470},{"bgAlpha":1,"corner":18,"class":"Frame","w":620,"bg":{"b":0.964706,"g":0.517647,"r":0.227451},"y":65,"x":90,"name":"Header","rotation":0,"zindex":1,"gradient":{"rotation":0,"kps":[{"b":0.964706,"t":0,"g":0.517647,"r":0.227451},{"b":0.964706,"t":1,"g":0.34902,"r":0.584314}]},"seq":3,"h":86},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":30,"corner":0,"bg":{"b":1,"g":1,"r":1},"textStroke":{"a":0.65,"b":0.156863,"g":0.0941176,"r":0.0784314},"scaled":false,"rotation":0,"xa":"Left","font":"GothamBold","zindex":1,"w":480,"textSize":24,"y":85,"x":112,"name":"TextLabel","textAlpha":1,"text":"富特性渲染自检","wrapped":false,"seq":4,"textColor":{"b":1,"g":1,"r":1}},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":18,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Left","font":"Gotham","zindex":1,"w":480,"textSize":13,"y":115,"x":112,"name":"TextLabel","textAlpha":1,"text":"渐变 · 渐隐 · 描边 · 旋转 · 裁剪 · 组透明度","wrapped":false,"seq":5,"textColor":{"b":1,"g":0.909804,"r":0.894118}},{"bgAlpha":1,"corner":6,"class":"Frame","w":54,"bg":{"b":0.376471,"g":0.376471,"r":0.956863},"y":79,"x":632,"name":"Badge","rotation":15,"zindex":1,"gradient":{"rotation":0,"kps":[{"b":0.478431,"t":0,"g":0.478431,"r":1},{"b":0.376471,"t":1,"g":0.376471,"r":0.956863}]},"seq":6,"h":24},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":24,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Center","font":"GothamBold","zindex":1,"w":54,"textSize":12,"y":79,"x":632,"name":"TextLabel","textAlpha":1,"text":"NEW","wrapped":false,"seq":7,"textColor":{"b":1,"g":1,"r":1}},{"bgAlpha":1,"corner":0,"class":"Frame","w":576,"bg":{"b":1,"g":0.54902,"r":0.470588},"y":151,"x":112,"name":"FadeBar","rotation":0,"zindex":1,"gradient":{"kps":[{"b":1,"t":0,"g":0.54902,"r":0.470588},{"b":1,"t":1,"g":0.54902,"r":0.470588}],"tr":[{"v":0,"t":0},{"v":1,"t":1}],"rotation":0},"seq":8,"h":3},{"bgAlpha":0,"corner":0,"class":"ScrollingFrame","w":576,"bg":{"b":1,"g":1,"r":1},"y":169,"x":112,"name":"Content","rotation":0,"zindex":1,"seq":9,"h":346},{"clip":{"y":169,"x":112,"w":576,"h":346},"stroke":{"thickness":1,"applyMode":"Contextual","r":0.227451,"lineJoin":"Round","b":0.313725,"g":0.25098,"a":0.65},"bgAlpha":1,"corner":10,"class":"Frame","w":576,"bg":{"b":0.180392,"g":0.137255,"r":0.121569},"y":169,"x":112,"name":"RowRadio","rotation":0,"zindex":1,"seq":10,"h":46},{"imageAlpha":1,"imageColor":{"b":1,"g":1,"r":1},"image":true,"bgAlpha":0.9,"clip":{"y":169,"x":112,"w":576,"h":346},"zindex":1,"w":24,"corner":6,"rotation":0,"h":24,"name":"Icon","class":"ImageLabel","bg":{"b":0.964706,"g":0.517647,"r":0.227451},"y":180,"seq":11,"x":124},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":46,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Left","font":"Gotham","textSize":15,"zindex":1,"w":456,"textAlpha":1,"y":169,"x":158,"name":"TextLabel","text":"实时高亮","clip":{"y":169,"x":112,"w":576,"h":346},"wrapped":false,"seq":12,"textColor":{"b":0.964706,"g":0.933333,"r":0.913725}},{"clip":{"y":169,"x":112,"w":576,"h":346},"bgAlpha":1,"corner":13,"class":"Frame","w":46,"bg":{"b":0.6,"g":0.827451,"r":0.203922},"y":179,"x":630,"name":"ToggleTrack","rotation":0,"zindex":1,"gradient":{"rotation":0,"kps":[{"b":0.6,"t":0,"g":0.827451,"r":0.203922},{"b":0.588235,"t":1,"g":0.772549,"r":0.133333}]},"seq":13,"h":26},{"clip":{"y":169,"x":112,"w":576,"h":346},"stroke":{"thickness":1,"applyMode":"Contextual","r":0,"lineJoin":"Round","b":0,"g":0,"a":0.15},"bgAlpha":1,"corner":10,"class":"Frame","w":20,"bg":{"b":1,"g":1,"r":1},"y":182,"x":652,"name":"ToggleKnob","rotation":0,"zindex":1,"seq":14,"h":20},{"clip":{"y":169,"x":112,"w":576,"h":346},"stroke":{"thickness":1,"applyMode":"Contextual","r":0.227451,"lineJoin":"Round","b":0.313725,"g":0.25098,"a":0.65},"bgAlpha":1,"corner":10,"class":"Frame","w":576,"bg":{"b":0.180392,"g":0.137255,"r":0.121569},"y":225,"x":112,"name":"RowSlider","rotation":0,"zindex":1,"seq":15,"h":46},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":20,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Left","font":"Gotham","textSize":15,"zindex":1,"w":456,"textAlpha":1,"y":231,"x":126,"name":"TextLabel","text":"渲染质量","clip":{"y":169,"x":112,"w":576,"h":346},"wrapped":false,"seq":16,"textColor":{"b":0.964706,"g":0.933333,"r":0.913725}},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":20,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Right","font":"Gotham","textSize":14,"zindex":1,"w":56,"textAlpha":1,"y":231,"x":618,"name":"TextLabel","text":"82%","clip":{"y":169,"x":112,"w":576,"h":346},"wrapped":false,"seq":17,"textColor":{"b":0.698039,"g":0.623529,"r":0.588235}},{"clip":{"y":169,"x":112,"w":576,"h":346},"bgAlpha":1,"corner":4,"class":"Frame","w":548,"bg":{"b":0.243137,"g":0.192157,"r":0.172549},"y":256,"x":126,"name":"BarTrack","rotation":0,"zindex":1,"seq":18,"h":8},{"clip":{"y":169,"x":112,"w":576,"h":346},"bgAlpha":1,"corner":4,"class":"Frame","w":449.36,"bg":{"b":0.964706,"g":0.517647,"r":0.227451},"y":256,"x":126,"name":"Fill","rotation":0,"zindex":1,"gradient":{"rotation":0,"kps":[{"b":0.964706,"t":0,"g":0.517647,"r":0.227451},{"b":0.964706,"t":1,"g":0.34902,"r":0.584314}]},"seq":19,"h":8},{"clip":{"y":169,"x":112,"w":576,"h":346},"stroke":{"thickness":1,"applyMode":"Contextual","r":0.227451,"lineJoin":"Round","b":0.313725,"g":0.25098,"a":0.65},"bgAlpha":1,"corner":10,"class":"Frame","w":576,"bg":{"b":0.180392,"g":0.137255,"r":0.121569},"y":281,"x":112,"name":"RowLoad","rotation":0,"zindex":1,"seq":20,"h":46},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":20,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Left","font":"Gotham","textSize":15,"zindex":1,"w":456,"textAlpha":1,"y":287,"x":126,"name":"TextLabel","text":"资源载入","clip":{"y":169,"x":112,"w":576,"h":346},"wrapped":false,"seq":21,"textColor":{"b":0.964706,"g":0.933333,"r":0.913725}},{"clip":{"y":169,"x":112,"w":576,"h":346},"bgAlpha":1,"corner":4,"class":"Frame","w":548,"bg":{"b":0.243137,"g":0.192157,"r":0.172549},"y":312,"x":126,"name":"BarTrack","rotation":0,"zindex":1,"seq":22,"h":8},{"clip":{"y":169,"x":112,"w":576,"h":346},"bgAlpha":1,"corner":4,"class":"Frame","w":301.4,"bg":{"b":0.6,"g":0.827451,"r":0.203922},"y":312,"x":126,"name":"Fill","rotation":0,"zindex":1,"gradient":{"rotation":0,"kps":[{"b":0.6,"t":0,"g":0.827451,"r":0.203922},{"b":0.784314,"t":1,"g":0.941176,"r":0.470588}]},"seq":23,"h":8},{"clip":{"y":169,"x":112,"w":576,"h":346},"stroke":{"thickness":1,"applyMode":"Contextual","r":0.227451,"lineJoin":"Round","b":0.313725,"g":0.25098,"a":0.65},"bgAlpha":1,"corner":10,"class":"Frame","w":576,"bg":{"b":0.180392,"g":0.137255,"r":0.121569},"y":337,"x":112,"name":"RowTeam","rotation":0,"zindex":1,"seq":24,"h":46},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":46,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Left","font":"Gotham","textSize":15,"zindex":1,"w":456,"textAlpha":1,"y":337,"x":126,"name":"TextLabel","text":"显示队友信息","clip":{"y":169,"x":112,"w":576,"h":346},"wrapped":false,"seq":25,"textColor":{"b":0.964706,"g":0.933333,"r":0.913725}},{"clip":{"y":169,"x":112,"w":576,"h":346},"bgAlpha":1,"corner":13,"class":"Frame","w":46,"bg":{"b":0.360784,"g":0.298039,"r":0.27451},"y":347,"x":630,"name":"ToggleTrack","rotation":0,"zindex":1,"seq":26,"h":26},{"clip":{"y":169,"x":112,"w":576,"h":346},"stroke":{"thickness":1,"applyMode":"Contextual","r":0,"lineJoin":"Round","b":0,"g":0,"a":0.15},"bgAlpha":1,"corner":10,"class":"Frame","w":20,"bg":{"b":1,"g":1,"r":1},"y":350,"x":633,"name":"ToggleKnob","rotation":0,"zindex":1,"seq":27,"h":20},{"stroke":{"thickness":1.5,"applyMode":"Contextual","r":0.227451,"lineJoin":"Round","b":0.964706,"g":0.517647,"a":0.6},"bgAlpha":0.6375,"corner":14,"class":"CanvasGroup","w":168,"bg":{"b":0.0784314,"g":0.054902,"r":0.0470588},"y":439,"x":520,"name":"Overlay","rotation":0,"zindex":1,"seq":28,"h":74},{"ya":"Center","bgAlpha":0,"class":"TextLabel","h":74,"corner":0,"bg":{"b":1,"g":1,"r":1},"scaled":false,"rotation":0,"xa":"Center","font":"Gotham","zindex":1,"w":152,"textSize":13,"y":439,"x":528,"name":"TextLabel","textAlpha":0.75,"text":"CanvasGroup 半透明浮层","wrapped":true,"seq":29,"textColor":{"b":0.964706,"g":0.933333,"r":0.913725}}]};</script>
+<script>
+const V = REPORT.viewport || {w:800,h:600};
+const OPS = REPORT.draws || [];
+const vp = document.getElementById('vp');
+
+function c255(x){ return Math.max(0, Math.min(255, Math.round((x||0)*255))); }
+function rgba(c, a){ return `rgba(${c255(c&&c.r)},${c255(c&&c.g)},${c255(c&&c.b)},${a})`; }
+
+const FONTS = {
+  Gotham: '"Inter","Montserrat","Segoe UI",system-ui',
+  GothamBold: '"Inter","Montserrat","Segoe UI",system-ui',
+  GothamBlack: '"Inter","Montserrat","Segoe UI",system-ui',
+  GothamMedium: '"Inter","Montserrat","Segoe UI",system-ui',
+  SourceSans: '"Source Sans 3","Segoe UI",system-ui',
+  SourceSansBold: '"Source Sans 3","Segoe UI",system-ui',
+  SourceSansItalic: '"Source Sans 3","Segoe UI",system-ui',
+  SourceSansLight: '"Source Sans 3","Segoe UI",system-ui',
+  Legacy: 'system-ui,"Segoe UI"',
+  FredokaOne: '"Fredoka One","Baloo 2","Comic Sans MS"',
+};
+function fontStack(name){
+  const base = FONTS[name] || FONTS.SourceSans;
+  return base + ',"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif';
+}
+
+function interp(stops, t, pick){
+  if(!stops || !stops.length) return null;
+  const s = stops.slice().sort((a,b)=>a.t-b.t);
+  let prev = s[0];
+  if(t <= (s[0].t||0)) return pick(s[0]);
+  for(const k of s){
+    if((k.t||0) >= t){ const span=(k.t-prev.t)||1; const f=(t-prev.t)/span;
+      return pick(prev, k, f); }
+    prev = k;
+  }
+  return pick(s[s.length-1]);
+}
+
+function backgroundOf(op){
+  const bgA = op.bgAlpha==null?1:op.bgAlpha;
+  const g = op.gradient;
+  if(g && g.kps && g.kps.length){
+    const rot = ((g.rotation||0)%360+360)%360;
+    const ang = 90 + rot;   // Roblox 0=左→右；CSS 90deg 亦为左→右
+    const tr = g.tr || [];
+    const stops = g.kps.slice().sort((a,b)=>a.t-b.t).map(k=>{
+      let a = bgA;
+      if(tr.length){
+        const tv = interp(tr, k.t, (p,q,f)=> f==null? p.v : p.v+(q.v-p.v)*f);
+        if(tv!=null) a = bgA * (1 - tv);
+      }
+      return `${rgba(k,a)} ${(k.t*100).toFixed(2)}%`;
+    });
+    return `linear-gradient(${ang}deg, ${stops.join(',')})`;
+  }
+  const c = op.bg || {r:0,g:0,b:0};
+  if(bgA<=0.004) return 'transparent';
+  return rgba(c, bgA);
+}
+
+function shadowsOf(op){
+  const sh = [];
+  if(op.stroke){
+    const st = op.stroke;
+    sh.push(`0 0 0 ${st.thickness}px ${rgba(st, st.a==null?1:st.a)}`);
+  }
+  if(op.border && op.border.size>0){
+    sh.push(`inset 0 0 0 ${op.border.size}px ${rgba(op.border.color,1)}`);
+  }
+  return sh.join(', ');
+}
+
+function clipOf(op){
+  const c = op.clip; if(!c) return '';
+  const rx0=Math.max(op.x,c.x), ry0=Math.max(op.y,c.y);
+  const rx1=Math.min(op.x+op.w,c.x+c.w), ry1=Math.min(op.y+op.h,c.y+c.h);
+  if(rx1<=rx0 || ry1<=ry0) return 'inset(0 0 100% 0)';
+  const top=ry0-op.y, left=rx0-op.x, right=(op.x+op.w)-rx1, bottom=(op.y+op.h)-ry1;
+  return `inset(${top}px ${right}px ${bottom}px ${left}px)`;
+}
+
+function mkText(op){
+  const d = document.createElement('div');
+  d.className = 'txt';
+  const xa = op.xa||'Left', ya = op.ya||'Top';
+  d.style.justifyContent = xa==='Center'?'center':(xa==='Right'?'flex-end':'flex-start');
+  d.style.alignItems = ya==='Center'?'center':(ya==='Bottom'?'flex-end':'flex-start');
+  if(op.pad){
+    d.style.paddingTop=op.pad.t+'px'; d.style.paddingBottom=op.pad.b+'px';
+    d.style.paddingLeft=op.pad.l+'px'; d.style.paddingRight=op.pad.r+'px';
+  }
+  const sp = document.createElement('span');
+  sp.textContent = op.text;
+  const size = op.textSize||14;
+  sp.style.fontFamily = fontStack(op.font);
+  sp.style.fontSize = size+'px';
+  sp.style.lineHeight = '1.2';
+  sp.style.color = rgba(op.textColor, op.textAlpha==null?1:op.textAlpha);
+  sp.style.whiteSpace = op.wrapped ? 'pre-wrap' : 'pre';
+  sp.style.wordBreak = op.wrapped ? 'break-word' : 'normal';
+  sp.style.textAlign = xa==='Center'?'center':(xa==='Right'?'right':'left');
+  if(op.textStroke){
+    const w = Math.max(1, Math.round(size*0.05));
+    sp.style.webkitTextStroke = `${w}px ${rgba(op.textStroke, op.textStroke.a)}`;
+  }
+  if(op.scaled) sp.classList.add('scaled');
+  d.appendChild(sp);
+  return d;
+}
+
+function build(){
+  vp.style.width = V.w+'px'; vp.style.height = V.h+'px';
+  OPS.forEach(op=>{
+    if(op.w<0.5||op.h<0.5) return;
+    const el = document.createElement('div');
+    el.className='gui';
+    el.dataset.name = (op.class||'') + ' " ' + (op.name||'') + ' "';
+    el.dataset.badge = '#'+op.seq;
+    const st = el.style;
+    st.left = op.x+'px'; st.top = op.y+'px';
+    st.width = op.w+'px'; st.height = op.h+'px';
+    const bg = backgroundOf(op);
+    if(bg!=='transparent') st.background = bg;
+    if(op.corner>0) st.borderRadius = op.corner+'px';
+    const sh = shadowsOf(op); if(sh) st.boxShadow = sh;
+    if(op.image){
+      st.backgroundImage = `repeating-linear-gradient(45deg, ${rgba(op.imageColor,0.18)} 0 6px, transparent 6px 12px)`;
+      st.backgroundBlendMode='overlay';
+      if(bg!=='transparent') st.background = bg + ', ' + st.backgroundImage;
+      else st.background = rgba(op.imageColor,0.10);
+    }
+    const cp = clipOf(op); if(cp) st.clipPath = cp;
+    if(op.rotation) st.transform = `rotate(${op.rotation}deg)`;
+    if(op.text) el.appendChild(mkText(op));
+
+    el.addEventListener('mouseenter', ()=>showTip(op, el));
+    el.addEventListener('mouseleave', hideTip);
+    vp.appendChild(el);
+  });
+  fitScaled();
+}
+
+function fitScaled(){
+  vp.querySelectorAll('span.scaled').forEach(sp=>{
+    const box = sp.parentElement;
+    const availW = box.clientWidth, availH = box.clientHeight;
+    if(availW<=0||availH<=0) return;
+    const text = sp.textContent;
+    let lo=1, hi=200;
+    for(let i=0;i<18;i++){
+      const mid=(lo+hi)/2; sp.style.fontSize=mid+'px';
+      const w = sp.scrollWidth, h = sp.scrollHeight;
+      if(w<=availW && h<=availH) lo=mid; else hi=mid;
+    }
+    sp.style.fontSize=Math.floor(lo)+'px';
+  });
+}
+
+const tip = document.getElementById('tip');
+function showTip(op, el){
+  const r = el.getBoundingClientRect();
+  el.classList.add('hl');
+  tip.textContent =
+    `${op.class}  ${op.name||''}\n`+
+    `x=${Math.round(op.x)} y=${Math.round(op.y)} w=${Math.round(op.w)} h=${Math.round(op.h)}\n`+
+    `z=${op.zindex}  seq=${op.seq}`+
+    (op.corner?`  radius=${op.corner}`:'')+
+    (op.text?`\ntext=${JSON.stringify(op.text).slice(0,40)}`:'');
+  tip.style.display='block';
+  tip.style.left = Math.min(window.innerWidth-260, r.left)+'px';
+  tip.style.top  = Math.min(window.innerHeight-80, r.bottom+6)+'px';
+}
+function hideTip(){ tip.style.display='none';
+  vp.querySelectorAll('.gui.hl').forEach(e=>e.classList.remove('hl')); }
+
+let zoom = 1;
+function applyZoom(){
+  document.getElementById('wrap').style.transform = `scale(${zoom})`;
+  document.getElementById('stage').style.minHeight = (V.h*zoom+56)+'px';
+}
+document.getElementById('zin').onclick  = ()=>{ zoom=Math.min(6,zoom+0.25); applyZoom(); };
+document.getElementById('zout').onclick = ()=>{ zoom=Math.max(0.25,zoom-0.25); applyZoom(); };
+document.getElementById('z1').onclick   = ()=>{ zoom=1; applyZoom(); };
+document.getElementById('tbox').onclick = e=>{ vp.classList.toggle('boxes'); e.target.classList.toggle('on'); };
+document.getElementById('tseq').onclick = e=>{ vp.classList.toggle('badges'); e.target.classList.toggle('on'); };
+document.getElementById('tx').onclick   = e=>{
+  document.querySelectorAll('.txt').forEach(t=>t.style.visibility =
+    (t.style.visibility==='hidden'?'visible':'hidden'));
+  e.target.classList.toggle('on');
+};
+document.getElementById('tbg').onclick  = e=>{
+  const cur = vp.style.background;
+  vp.style.background = cur==='rgb(15, 17, 21)' ? '#f5f5f7' : '#0f1115';
+  e.target.classList.toggle('on');
+};
+
+build(); applyZoom();
+</script>
+</body>
+</html>

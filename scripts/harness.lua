@@ -138,6 +138,11 @@ end
 
 function mkInput(opts) return M.mkInput(opts) end
 
+-- 命中测试：返回该点最上层可见 GuiObject（供交互式点击定位）
+function hitTest(x, y)
+    return Vision.findByPoint(x, y)
+end
+
 function findByName(name)
     local inst = Vision.findByName(name)
     return inst

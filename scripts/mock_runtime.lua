@@ -436,6 +436,8 @@ function InstanceMT.__index(self, key)
         if not evs[key] then evs[key] = newSignal() end
         return evs[key]
     end
+    -- 真机 Instance.Name 永远返回字符串（默认等于类名），mock 亦然
+    if key == "Name" then return rawget(self, "ClassName") or "" end
     local cd = CLASS_DEFAULTS[rawget(self, "ClassName")]
     if cd and cd[key] ~= nil then return cd[key] end
     if DEFAULT_PROPS[key] ~= nil then return DEFAULT_PROPS[key] end

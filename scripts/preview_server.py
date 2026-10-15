@@ -41,6 +41,25 @@ from run_ui_luau import extract_json  # noqa: E402  复用同一套哨兵 JSON �
 
 app = Flask(__name__)
 
+# 访问令牌：设置后所有页面/接口都需携带 ?k=<token>（或 X-Preview-Token 头）。
+# 暴露到公网时建议开启——上传的 Lua 会在本机被执行，令牌可挡住随机扫描者。
+ACCESS_TOKEN = None
+
+
+@app.before_request
+def _gate():
+    if not ACCESS_TOKEN:
+        return None
+    tok = request.args.get("k") or request.headers.get("X-Preview-Token") or ""
+    if tok == ACCESS_TOKEN:
+        return None
+    if request.method == "GET" and not request.path.startswith("/api/"):
+        return Response(
+            "<meta charset='utf-8'><h3>403 · 需要访问令牌</h3>"
+            "<p>请在链接后附加 <code>?k=&lt;令牌&gt;</code> 再打开。</p>",
+            status=403, mimetype="text/html")
+    return jsonify({"ok": False, "error": "403 需要访问令牌"}), 403
+
 RUN_LUAU = os.path.join(HERE, "run_ui_luau.py")
 RUN_LUPA = os.path.join(HERE, "run_ui.py")
 LUCIDE_STUB = os.path.join(SKILL_ROOT, "examples", "lucide_stub.lua")
@@ -412,6 +431,8 @@ body { height: 100vh; }
 <script>__JS__</script>
 <script>
 const $ = id => document.getElementById(id);
+const K = new URLSearchParams(location.search).get('k') || '';
+function api(u){ return K ? (u + (u.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(K)) : u; }
 let picked = [];
 
 function setLogs(html){ $('logs').innerHTML = html; }
@@ -448,7 +469,7 @@ async function render(payload, isForm){
   document.body.classList.add('busy');
   setLogs('渲染中… 引擎执行 + 布局计算');
   try {
-    const res = await fetch('/api/render', { method:'POST', body: payload });
+    const res = await fetch(api('/api/render'), { method:'POST', body: payload });
     const j = await res.json();
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||'渲染失败'))); return; }
@@ -486,7 +507,7 @@ document.getElementById('vp').addEventListener('click', async e=>{
   const x = (e.clientX - r.left) / zoom, y = (e.clientY - r.top) / zoom;
   busy(true); setLogs('点击 (' + Math.round(x) + ',' + Math.round(y) + ') → 命中测试并派发事件…');
   try {
-    const res = await fetch('/api/click', { method:'POST',
+    const res = await fetch(api('/api/click'), { method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ sessionId: SID, x: x, y: y }) });
     const j = await res.json();
@@ -503,7 +524,7 @@ document.getElementById('treset').onclick = async ()=>{
   if (!SID) return;
   busy(true);
   try {
-    const res = await fetch('/api/reset', { method:'POST',
+    const res = await fetch(api('/api/reset'), { method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ sessionId: SID }) });
     const j = await res.json();
@@ -531,8 +552,8 @@ async function demo(name){
   document.body.classList.add('busy');
   setLogs('加载内置示例 ' + name + ' …');
   try {
-    const res = await fetch('/api/demo?name=' + encodeURIComponent(name)
-      + '&engine=' + $('engine').value + '&viewport=' + encodeURIComponent($('viewport').value.trim()));
+    const res = await fetch(api('/api/demo?name=' + encodeURIComponent(name)
+      + '&engine=' + $('engine').value + '&viewport=' + encodeURIComponent($('viewport').value.trim())));
     const j = await res.json();
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }
@@ -563,7 +584,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--token", default="",
+                    help="访问令牌；设置后需以 ?k=<token> 访问（公网映射时建议开启，可写 auto 自动生成）")
     args = ap.parse_args()
+    global ACCESS_TOKEN
+    if args.token == "auto":
+        import secrets
+        ACCESS_TOKEN = secrets.token_urlsafe(9)
+        print("[preview_server] 访问令牌: %s" % ACCESS_TOKEN)
+    elif args.token:
+        ACCESS_TOKEN = args.token
     print("[preview_server] http://%s:%d/  (skill: %s)" % (args.host, args.port, SKILL_ROOT))
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
 

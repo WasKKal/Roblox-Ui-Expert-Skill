@@ -40,14 +40,17 @@ Roblox-Ui-Expert-Skill/
 │   ├── vision.lua            # 布局引擎 + 渲染器：算绝对矩形、输出结构树/ASCII/色彩网格
 │   ├── harness.lua           # 场景驱动：check/pump/tapUI/fireUI/Snapshot 等全局
 │   ├── run_ui.py             # CLI（lupa/Lua 5.5 路径）：运行场景 + 产出快照与断言报告
-│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：跑 Luau 引擎并渲染 PNG
+│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：跑 Luau 引擎并渲染 PNG/HTML
 │   ├── render_png.py         # 色彩网格 → PNG（逐格放大，粗）
-│   └── render_hires.py       # 矢量高清渲染：圆角/渐变/描边/真实字体文本 → 清晰 PNG
+│   ├── render_hires.py       # 矢量高清渲染：圆角/渐变/描边/旋转/真实字体文本 → 清晰 PNG
+│   └── render_html.py        # DOM+CSS 还原 → 自包含可交互 HTML（悬停探查/缩放/边界框）
 ├── examples/
 │   ├── demo_ui.lua           # 自包含演示 UI（淡入 / Tab / 各类控件 / 提示）
 │   ├── demo_scenario.lua     # 演示场景：13 条断言 + 3 张快照
 │   ├── simple_ui.lua         # 简易 UI 库（标题栏+按钮+开关+滑条+进度+提示）
-│   ├── simple_scenario.lua   # 简易场景：13 条断言，用于 luau PNG 渲染验证
+│   ├── simple_scenario.lua   # 简易场景：13 条断言，用于 luau 渲染验证
+│   ├── rich_ui.lua           # 富特性 UI（渐变/渐隐/描边/旋转/图片/组透明/裁剪）
+│   ├── rich_scenario.lua     # 富特性场景：16 条断言
 │   └── smoke_dynamiccow.lua  # 真实库 DynamicCowUI 冒烟（19 条断言全过）
 └── references/
     ├── vision-api.md          # vision.lua + harness 全部 API
@@ -131,6 +134,26 @@ python3 scripts/run_ui_luau.py \
 
 `--scale N` 控制输出放大（视口 ×N）；`--ss N` 控制超采样倍数（内部按 ×ss 绘制再降采样抗锯齿）。
 也可 `--dump-json report.json` 落盘引擎报告，再用 `python3 scripts/render_hires.py report.json out.png 2 3` 离线重渲染。
+
+**要「可交互」的版本，出 HTML（`--style html`）：**
+
+```bash
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/rich_ui.lua=examples/rich_ui.lua" \
+  --scenario examples/rich_scenario.lua \
+  --out /workspace/rich.html --style html
+# 生成自包含 HTML：浏览器打开即可交互
+```
+
+HTML 渲染把每个 GuiObject 映射成绝对定位 `<div>`，用 CSS 还原（`border-radius` 圆角、
+`linear-gradient` 渐变、`box-shadow` 描边/内边框、`clip-path: inset()` 裁剪、flex 文本
+对齐、`rotate()` 旋转）——**天然矢量、无限清晰**，并内置交互：
+
+- 鼠标悬停高亮元素 + 提示类名/名字/矩形/ZIndex/绘制序
+- 工具栏：缩放、显示边界框、显示绘制序、隐藏文字、切换浅色底
+- 自包含单文件（内嵌 JSON + CSS + JS），可直接分享
+
+`--style` 可选 `grid` / `hires` / `html` / `both`（三者全出）。
 
 ## 场景脚本怎么写
 

@@ -18,8 +18,53 @@ H.checks = { pass = 0, fail = 0 }
 H.errors = {}          -- 场景运行期错误（Lua 报错/超时/停滞）
 H.snapshots = 0
 
+-- 动画捕获：按虚拟时钟间隔采样绘制列表，得到多帧（用于 APNG / HTML 时间轴）
+H.capture = {
+    on = false,
+    interval = 0.2,    -- 采样间隔（虚拟秒）
+    nextAt = 0,
+    max = 120,         -- 帧数上限（超过自动停止，避免内存膨胀）
+    frames = {},
+}
+
 local M = __MOCK
 local Vision = Vision
+
+-- 开始/停止动画捕获
+function StartCapture(interval, maxFrames)
+    H.capture.on = true
+    H.capture.interval = tonumber(interval) or 0.2
+    if H.capture.interval < 1 / 60 then H.capture.interval = 1 / 60 end
+    H.capture.max = tonumber(maxFrames) or H.capture.max
+    H.capture.nextAt = 0
+    H.capture.frames = {}
+    return true
+end
+
+function StopCapture()
+    H.capture.on = false
+    return #H.capture.frames
+end
+
+-- 由驱动循环每帧调用：到达采样点时记录一帧
+function H.captureTick()
+    local cap = H.capture
+    if not cap.on then return end
+    local t = M.vclock()
+    if t + 1e-6 < cap.nextAt then return end
+    cap.nextAt = t + cap.interval
+    if #cap.frames >= cap.max then
+        cap.on = false
+        return
+    end
+    cap.frames[#cap.frames + 1] = {
+        t = t,
+        draws = Vision.buildDrawList(),
+    }
+end
+
+-- 挂到 mock 的帧钩子：每一帧（含场景结束后的 pump-after）都会检查是否需要采帧
+M.onFrame = H.captureTick
 
 -- ---------------------------------------------------------------------------
 -- 断言
@@ -101,23 +146,29 @@ function Snapshot(label)
     return Vision.Snapshot(label)
 end
 
--- pump(seconds)：在协程内让出，由驱动循环推进虚拟时间（不会触发嵌套告警）；
--- 不在协程内（主线程直调）时退化为 pumpSeconds
+-- pump(seconds)：在协程内让出，由驱动循环推进虚拟时间；主线程直调时同步推进。
+-- 注意：让出【不能】发生在 pcall 内——Luau 不允许跨越 C 调用边界 yield，
+--       历史写法 pcall(function() coroutine.yield(...) end) 在 luau 下恒失败，
+--       于是场景被同步执行完、drive 只统计到 1 帧，任何依赖时间推进的动画/延迟
+--       与帧采样都会失效。改为先判断当前是否处于可让出的协程中。
 function pump(seconds)
     seconds = seconds or 0
-    local yielded = false
-    pcall(function()
+    local yieldable
+    if coroutine.isyieldable then
+        yieldable = coroutine.isyieldable()
+    else
+        yieldable = (coroutine.running() ~= nil)
+    end
+    if yieldable then
         -- 逐帧让出（1/60 一步），让 Heartbeat/RenderStepped 每帧触发，
         -- 真实库里依赖帧事件推进的动画（loader / 补间手柄）才能正常推进。
         local steps = math.ceil(seconds / (1 / 60))
         for _ = 1, steps do
             coroutine.yield(1 / 60)
         end
-        yielded = true
-    end)
-    if not yielded then
-        M.pumpSeconds(seconds)
+        return
     end
+    M.pumpSeconds(seconds)
 end
 
 function tapUI(inst, opts)
@@ -266,42 +317,39 @@ end
 
 function EmitReport(path)
     path = path or "report.json"
-    -- 确保画布已生成
-    if not Vision.lastCanvas then Vision.Snapshot("luau_render") end
-    local cv = Vision.encodeCanvas(Vision.lastCanvas)
-    -- 结构树
-    local layout = Vision.computeLayout()
-    local nodes = {}
-    for _, gl in ipairs(layout) do
-        for _, e in ipairs(gl.entries) do
-            local inst = e.inst
-            nodes[#nodes + 1] = {
-                name = inst.Name or "",
-                class = inst.ClassName or "",
-                x = math.floor(e.rect.x + 0.5),
-                y = math.floor(e.rect.y + 0.5),
-                w = math.floor(e.rect.w + 0.5),
-                h = math.floor(e.rect.h + 0.5),
-                z = inst.ZIndex or 1,
-                visible = e.visible ~= false,
-            }
-        end
-    end
     local report = {
         engine = "luau",
         viewport = { w = Vision.viewport.w, h = Vision.viewport.h },
-        cell = { w = cv.cellW, h = cv.cellH },
-        canvas = {
-            cols = cv.cols, rows = cv.rows,
-            colors = cv.colors, glyphs = cv.glyphs, fg = cv.fgs,
-        },
-        structure = nodes,
-        draws = Vision.buildDrawList(),   -- 矢量绘制列表（高分辨率渲染用）
+        draws = Vision.buildDrawList(),   -- 矢量绘制列表（PNG / HTML 渲染用）
         checks = { pass = H.checks.pass, fail = H.checks.fail },
         errors = H.errors,
         warnings = M.warnings,
         tweenCount = #M.tweenLog,
     }
+    -- 结构树（可选）：文本报告里已打印结构树，JSON 默认不带（省一半负载与一次全树布局）
+    if __EMIT_STRUCTURE == true then
+        local nodes = {}
+        for _, gl in ipairs(Vision.computeLayout()) do
+            for _, e in ipairs(gl.entries) do
+                local inst = e.inst
+                nodes[#nodes + 1] = {
+                    name = inst.Name or "",
+                    class = inst.ClassName or "",
+                    x = math.floor(e.rect.x + 0.5),
+                    y = math.floor(e.rect.y + 0.5),
+                    w = math.floor(e.rect.w + 0.5),
+                    h = math.floor(e.rect.h + 0.5),
+                    z = inst.ZIndex or 1,
+                    visible = e.visible ~= false,
+                }
+            end
+        end
+        report.structure = nodes
+    end
+    if #H.capture.frames > 0 then
+        report.frames = H.capture.frames
+        report.frameInterval = H.capture.interval
+    end
     local out = {}
     jsonValue(report, out)
     -- 通过 stdout 输出带哨兵的 JSON（真实 luau 解释器禁用了 io 库，

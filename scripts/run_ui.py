@@ -101,6 +101,8 @@ def main():
     ap.add_argument("--pump-after", type=float, default=1.0)
     ap.add_argument("--no-final-snapshot", action="store_true")
     ap.add_argument("--output", default=None)
+    ap.add_argument("--emit-json", action="store_true",
+                    help="结尾额外打印带哨兵的引擎报告 JSON（draws 等），供 HTML 预览/离线渲染使用")
     args = ap.parse_args()
 
     try:
@@ -191,6 +193,8 @@ def main():
             lua.execute("__MOCK.pumpSeconds(%r)" % args.pump_after)
         if not args.no_final_snapshot and int(H.snapshots) == 0:
             lua.execute('Snapshot("结束状态")')
+        if args.emit_json:
+            lua.execute('EmitReport([[dummy]])')
 
         passed = bool(H.summary())
         exit_code = 0 if passed else 1

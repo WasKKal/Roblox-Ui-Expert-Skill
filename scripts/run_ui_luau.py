@@ -261,6 +261,8 @@ def main():
     ap.add_argument("--scale", type=int, default=2, help="hires 输出放大倍数（默认 2，即 800x600→1600x1200）")
     ap.add_argument("--ss", type=int, default=3, help="hires 超采样倍数（默认 3，越大边缘越平滑）")
     ap.add_argument("--dump-json", default="", help="把引擎报告 JSON 落盘（便于离线重渲染）")
+    ap.add_argument("--click", action="append", default=[],
+                    help="X,Y：场景结束后依次在该点做命中测试并派发点击（可多次），用于交互式重渲染")
     args = ap.parse_args()
 
     try:
@@ -296,6 +298,27 @@ def main():
             reg_lines.append('__MOCK.RegisterLib([[%s]], b64decode([[%s]]))'
                              % (url, b64(content)))
 
+        # 交互：场景结束后按顺序做命中测试 + 派发点击，再推进时钟
+        click_items = []
+        for spec in args.click:
+            try:
+                cx, cy = (float(t) for t in spec.split(","))
+                click_items.append("{%r,%r}" % (cx, cy))
+            except ValueError:
+                fail("--click 格式应为 X,Y（如 640,300）")
+        click_lines = ""
+        if click_items:
+            click_lines = (
+                "\ndo\n  local __clicks = {%s}\n"
+                "  for _, c in ipairs(__clicks) do\n"
+                "    local __t = hitTest(c[1], c[2])\n"
+                "    if __t then tapUI(__t) else print(b64decode([[VGFwMDo=]]) .. ' miss @ ' .. c[1] .. ',' .. c[2]) end\n"
+                "    __MOCK.pumpSeconds(0.5)\n"
+                "  end\n"
+                "  Snapshot([[事件后]])\n"
+                "end\n" % ",".join(click_items)
+            )
+
         main_src = (
             LUAU_HEADER
             + "\nloadsrc([[mock_runtime.lua]], [[%s]])\n" % mod_b64["mock_runtime.lua"]
@@ -306,6 +329,7 @@ def main():
             + "\n".join(reg_lines) + "\n"
             + "Harness.runScenario(b64decode([[%s]]), [[%s]], { maxSeconds = %s })\n"
               % (b64(scenario_src), os.path.basename(args.scenario), repr(args.max_seconds))
+            + click_lines
             + "if Harness.snapshots == 0 then Snapshot([[结束状态]]) end\n"
             + "if %s > 0 then __MOCK.pumpSeconds(%s) end\n"
               % (repr(args.pump_after), repr(args.pump_after))

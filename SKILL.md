@@ -181,6 +181,22 @@ DOM+CSS 渲染器**渲染。页面提供：引擎切换（luau / lupa）、视�
 > 用 DeltaUI 可直观验证：点左侧导航按钮切换页面（如 `--click 25,465` 进入"设置/Settings"，
 > 元素数 73 → 250），点"重置交互"回到初始页。
 
+**映射到公网**（让外部可访问；沙箱无 cloudflared，用 SSH 反向隧道最省事）：
+
+```bash
+# 1) 带访问令牌启动（公网暴露务必加令牌：上传的 Lua 会在本机被执行）
+python3 scripts/preview_server.py --port 8765 --token auto     # 或 --token 你的口令
+
+# 2) 建隧道（localhost.run 免费、无需账号；也可换成 serveo.net）
+ssh -o StrictHostKeyChecking=no -T -R 80:localhost:8765 nokey@localhost.run
+#   输出形如：https://xxxxxxxxxxxx.lhr.life tunneled with tls termination
+
+# 3) 外部访问： https://xxxxxxxxxxxx.lhr.life/?k=<token>
+```
+
+安全提示：`--token` 会拦截所有未携带 `?k=<token>` 的请求（API 返回 403、页面返回提示页）。
+免费隧道域名是**临时**的，SSH 断开或沙箱休眠后会失效，重连通常换新域名。
+
 ## 场景脚本怎么写
 
 场景是普通 Luau，运行在 mock 运行时内，可直接调用库的公开 API：

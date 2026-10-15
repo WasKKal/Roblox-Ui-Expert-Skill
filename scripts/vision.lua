@@ -11,7 +11,7 @@
 -- ============================================================================
 
 local Vision = {}
-local M = _G.__MOCK          -- mock_runtime 导出的模块表
+local M = __MOCK          -- mock_runtime 导出的模块表（裸全局，luau 下为共享默认环境）
 
 -- 不作为可见对象的装饰类（挂到父级备注，不占矩形）
 local DECOR_CLASSES = {

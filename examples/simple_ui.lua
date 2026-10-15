@@ -2,7 +2,7 @@
 -- simple_ui.lua — 简易 UI 库（引擎绘图测试靶子）
 -- ==========================================
 -- 用途：用最少的代码搭一个视觉元素丰富的窗口，用来检验无头引擎的绘制效果，
---       并可由 scripts/render_png.py 导出为 PNG 直接查看。
+--       并可由 scripts/run_ui_luau.py 渲染为 PNG / HTML 直接查看。
 --
 -- 覆盖的绘制能力：
 --   ScreenGui / CanvasGroup 分层 · Frame 圆角 · UIStroke 描边 · UIGradient 渐变

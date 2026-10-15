@@ -39,10 +39,14 @@ Roblox-Ui-Expert-Skill/
 │   │                         #   执行器 FS(HttpGet/loadstring/getcustomasset/request)
 │   ├── vision.lua            # 布局引擎 + 渲染器：算绝对矩形、输出结构树/ASCII/色彩网格
 │   ├── harness.lua           # 场景驱动：check/pump/tapUI/fireUI/Snapshot 等全局
-│   └── run_ui.py             # CLI：加载库 + 运行场景 + 产出快照与断言报告
+│   ├── run_ui.py             # CLI（lupa/Lua 5.5 路径）：运行场景 + 产出快照与断言报告
+│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：跑 Luau 引擎并渲染真实 PNG
+│   └── render_png.py         # 把色彩网格渲染成高清 PNG（真实像素图）
 ├── examples/
 │   ├── demo_ui.lua           # 自包含演示 UI（淡入 / Tab / 各类控件 / 提示）
 │   ├── demo_scenario.lua     # 演示场景：13 条断言 + 3 张快照
+│   ├── simple_ui.lua         # 简易 UI 库（标题栏+按钮+开关+滑条+进度+提示）
+│   ├── simple_scenario.lua   # 简易场景：13 条断言，用于 luau PNG 渲染验证
 │   └── smoke_dynamiccow.lua  # 真实库 DynamicCowUI 冒烟（19 条断言全过）
 └── references/
     ├── vision-api.md          # vision.lua + harness 全部 API
@@ -72,7 +76,27 @@ python3 scripts/run_ui.py \
   --scenario examples/smoke_dynamiccow.lua
 ```
 
-**参数速查：**
+**用【真实 Luau 解释器】渲染出 PNG（原生 Luau 语法 + 真实像素图）：**
+
+```bash
+# 需要 luau 可执行文件（从源码编译：cmake + make Luau.Repl.CLI）
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
+  --scenario examples/simple_scenario.lua \
+  --out /workspace/ui_render_luau.png
+# 产出：真实像素 PNG + 13/13 断言；与原 lupa 路径的画布逐字节一致
+```
+
+`run_ui_luau.py` 与 `run_ui.py` 的区别：
+
+| | `run_ui.py`（lupa） | `run_ui_luau.py`（真实 luau） |
+|---|---|---|
+| 执行引擎 | lupa 的 Lua 5.5 + 手写兼容层 | 官方 luau 解释器（源码编译） |
+| 语法 | Lua 5.x 安全子集（无 `+=`/`continue`，无类型注解） | **原生 Luau 全语法**（`+=`/`continue`/类型注解/字符串插值） |
+| 输出 | 结构树 + ASCII + 色彩网格（文本） | 同上 + **真实 PNG 像素图** |
+| 传参方式 | lupa 进程内直接加载模块 | 模块/库/场景 base64 内联进入口，JSON 经 stdout 哨兵回传 |
+
+**参数速查（`run_ui.py`）：**
 
 | 参数 | 含义 |
 |------|------|
@@ -83,6 +107,9 @@ python3 scripts/run_ui.py \
 | `--max-seconds 300` | 场景最大虚拟时长 |
 | `--pump-after 1` | 场景结束后补拍的秒数 |
 | `--output FILE` | 把报告 Tee 落盘 |
+
+`run_ui_luau.py` 额外参数：`--out FILE`（PNG 路径）、`--bg #RRGGBB`（画布底色）、
+`--no-glyphs`（只出纯色块，更接近真实 UI）、`--luau PATH`（指定解释器）。
 
 ## 场景脚本怎么写
 
@@ -126,9 +153,12 @@ __HARNESS.summary`。
 
 1. `examples/demo_scenario.lua` → 期望 **13/13 通过、0 错误、0 警告**
 2. `examples/smoke_dynamiccow.lua`（需真实库文件）→ 期望 **19/19 通过、0 错误**
+3. `run_ui_luau.py --scenario examples/simple_scenario.lua`（真实 luau 路径）
+   → 期望 **13/13 通过、0 错误**，且生成的 PNG 与 `run_ui.py` 渲染结果一致
 
-任何改动 `mock_runtime.lua` / `vision.lua` 后，先重跑这两条；新增断言不得让
-既有场景失败。
+任何改动 `mock_runtime.lua` / `vision.lua` 后，先重跑这三条；新增断言不得让
+既有场景失败。注意：两个运行时**共用同一套模块源码**，改动须同时兼容 lupa 与
+真实 luau（避免 `_G.*` 写入、避免同名局部导出如 `Enum = Enum`）。
 
 ## 已知边界（重要）
 
@@ -139,9 +169,13 @@ __HARNESS.summary`。
   依赖真实渲染循环的属性变更事件（`GetPropertyChangedSignal` / `AbsoluteSize`
   更新）。这不影响「加载 / CreateWindow / 全控件工厂 / 补间 / 调度 / HttpGet」等
   核心能力的验证。
-- 仅支持 Luau 的**安全子集**（见 `references/luau-compat.md`）：`table.freeze`、
-  `math.round`、`string.split` 等内建已补；`continue`、`+=` 等 Lua 5.1/5.3 非语法
-  不支持，请用等价写法。
+- **两条执行路径的语法差异**（见 `references/luau-compat.md`）：
+  - `run_ui.py`（lupa/Lua 5.5）：仅支持 Luau 的**安全子集**——`table.freeze`、
+    `math.round`、`string.split` 等内建已补；`continue`、`+=`、类型注解等不支持。
+  - `run_ui_luau.py`（真实 luau）：**原生 Luau 全语法**（`+=`/`continue`/类型注解/
+    字符串插值），无需兼容层。两条路径产出的画布**逐字节一致**（已验证 md5 相同）。
+- `references/luau-compat.md` 记录的兼容层仅对 `run_ui.py` 有意义；真实 luau 路径下
+  标准库表（`table`/`math`/`string`/`coroutine`）为只读，模块内不再写入这些表。
 
 ## 引用
 

@@ -320,7 +320,17 @@ def render_hires(report, out_path, bg=(15, 17, 21), scale=2, ss=3, show_text=Tru
         if show_text and op.get("text"):
             _draw_text(L, op, ox, oy, w, h, S)
 
-        canvas.alpha_composite(L, (int(round(rx0)), int(round(ry0))))
+        # 6) 旋转（Roblox Rotation：绕元素中心顺时针）→ 合成到临时整幅层再旋转
+        rot = float(op.get("rotation", 0) or 0)
+        if abs(rot) > 0.01:
+            tmp = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            tmp.alpha_composite(L, (int(round(rx0)), int(round(ry0))))
+            cx = x + w / 2.0
+            cy = y + h / 2.0
+            tmp = tmp.rotate(-rot, center=(cx, cy), resample=Image.BICUBIC)
+            canvas.alpha_composite(tmp)
+        else:
+            canvas.alpha_composite(L, (int(round(rx0)), int(round(ry0))))
 
     # 降采样到目标尺寸（超采样抗锯齿）
     target = (W * zoom, H * zoom)

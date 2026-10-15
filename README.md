@@ -21,6 +21,12 @@ python3 scripts/run_ui.py \
   --lib "URL_A=/path/DynamicCowUI.lua" \
   --lib "URL_B=/path/lucide_init_v6.lua" \
   --scenario examples/smoke_dynamiccow.lua
+
+# 3) 用【真实 Luau 解释器】执行并渲染出 PNG（原生 Luau 语法，13/13 全过）
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
+  --scenario examples/simple_scenario.lua \
+  --out /workspace/ui_render_luau.png
 ```
 
 ## 它是怎么工作的
@@ -33,6 +39,9 @@ Luau 库/场景  ──►  mock_runtime.lua（Instance 树 + 虚拟时钟 + 执
                     │
                     ▼
         run_ui.py（CLI：加载库 + 驱动场景 + 产出结构树/ASCII/色彩网格 + 断言报告）
+                    │
+                    ▼
+   run_ui_luau.py（真实 luau 解释器执行同一套模块 → 渲染真实 PNG 像素图）
 ```
 
 核心心智模型：**mock 是静态布局引擎 + 虚拟时钟**。补间 `Play()` 立即应用目标属性，但
@@ -50,10 +59,14 @@ Roblox-Ui-Expert-Skill/
 │   ├── mock_runtime.lua      # 无头运行时
 │   ├── vision.lua            # 布局引擎 + 渲染器
 │   ├── harness.lua           # 场景驱动 + 断言设施
-│   └── run_ui.py             # CLI
+│   ├── run_ui.py             # CLI（lupa/Lua 5.5）
+│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器，渲染 PNG）
+│   └── render_png.py         # 色彩网格 → 高清 PNG
 ├── examples/
 │   ├── demo_ui.lua           # 自包含演示 UI
 │   ├── demo_scenario.lua     # 演示场景（13 断言）
+│   ├── simple_ui.lua         # 简易 UI 库
+│   ├── simple_scenario.lua   # 简易场景（luau PNG 渲染验证）
 │   └── smoke_dynamiccow.lua  # 真实库冒烟（19 断言）
 └── references/
     ├── vision-api.md         # 完整 API 参考
@@ -92,15 +105,18 @@ __HARNESS.summary()                         -- 必须：打印断言汇总
 |------|------|
 | `examples/demo_scenario.lua` | 13/13 通过、0 错误、0 警告 |
 | `examples/smoke_dynamiccow.lua` | 19/19 通过、0 错误 |
+| `examples/simple_scenario.lua`（`run_ui_luau.py`） | 13/13 通过、0 错误，PNG 与 lupa 路径一致 |
 
-任何改动 `mock_runtime.lua` / `vision.lua` 后先重跑这两条；新增断言不得让既有场景失败。
+任何改动 `mock_runtime.lua` / `vision.lua` 后先重跑这几条；新增断言不得让既有场景失败。
+两个运行时共用同一套模块源码，改动须同时兼容（避免 `_G.*` 写入、避免同名局部导出）。
 
 ## 已知边界
 
 - 无头静态运行时：不模拟像素级渲染、不模拟真实字体度量、不模拟 hover 态。
 - 真实库的多阶段入场状态机（分裂球→展开面板→`buildTabUI`）在静态 mock 下通常推进到
   「标题 handoff」阶段即停（依赖真实渲染循环的属性变更事件），不影响核心能力验证。
-- 仅接受 Luau 的 Lua-5 兼容子集（见 `references/luau-compat.md`）。
+- 语法子集：`run_ui.py`（lupa）仅接受 Luau 的 Lua-5 兼容子集；`run_ui_luau.py`
+  （真实 luau 解释器）**原生支持全 Luau 语法**（见 `references/luau-compat.md`）。
 
 ## 适用场景
 

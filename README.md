@@ -33,6 +33,12 @@ python3 scripts/run_ui_luau.py \
   --lib "https://mock.local/simple_ui.lua=examples/simple_ui.lua" \
   --scenario examples/simple_scenario.lua \
   --out /workspace/ui_clear.png --style hires --scale 2 --ss 3
+
+# 5) 要「可交互」的版本：自包含 HTML（浏览器打开，悬停探查/缩放/边界框）
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/rich_ui.lua=examples/rich_ui.lua" \
+  --scenario examples/rich_scenario.lua \
+  --out /workspace/rich.html --style html
 ```
 
 ## 它是怎么工作的
@@ -66,14 +72,17 @@ Roblox-Ui-Expert-Skill/
 │   ├── vision.lua            # 布局引擎 + 渲染器
 │   ├── harness.lua           # 场景驱动 + 断言设施
 │   ├── run_ui.py             # CLI（lupa/Lua 5.5）
-│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器，渲染 PNG）
+│   ├── run_ui_luau.py        # CLI（真实 Luau 解释器，渲染 PNG/HTML）
 │   ├── render_png.py         # 色彩网格 → PNG（逐格放大，粗）
-│   └── render_hires.py       # 矢量高清渲染（圆角/渐变/描边/真实字体）
+│   ├── render_hires.py       # 矢量高清渲染（圆角/渐变/描边/旋转/真实字体）
+│   └── render_html.py        # DOM+CSS → 自包含可交互 HTML
 ├── examples/
 │   ├── demo_ui.lua           # 自包含演示 UI
 │   ├── demo_scenario.lua     # 演示场景（13 断言）
 │   ├── simple_ui.lua         # 简易 UI 库
-│   ├── simple_scenario.lua   # 简易场景（luau PNG 渲染验证）
+│   ├── simple_scenario.lua   # 简易场景（luau 渲染验证）
+│   ├── rich_ui.lua           # 富特性 UI（渐变/渐隐/描边/旋转/组透明/裁剪）
+│   ├── rich_scenario.lua     # 富特性场景（16 断言）
 │   └── smoke_dynamiccow.lua  # 真实库冒烟（19 断言）
 └── references/
     ├── vision-api.md         # 完整 API 参考
@@ -113,6 +122,7 @@ __HARNESS.summary()                         -- 必须：打印断言汇总
 | `examples/demo_scenario.lua` | 13/13 通过、0 错误、0 警告 |
 | `examples/smoke_dynamiccow.lua` | 19/19 通过、0 错误 |
 | `examples/simple_scenario.lua`（`run_ui_luau.py`） | 13/13 通过、0 错误，PNG 与 lupa 路径一致 |
+| `examples/rich_scenario.lua`（`run_ui_luau.py --style both`） | 16/16 通过、0 错误，产出 PNG + HTML |
 
 任何改动 `mock_runtime.lua` / `vision.lua` 后先重跑这几条；新增断言不得让既有场景失败。
 两个运行时共用同一套模块源码，改动须同时兼容（避免 `_G.*` 写入、避免同名局部导出）。

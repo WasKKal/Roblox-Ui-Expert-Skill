@@ -20,6 +20,7 @@ run_ui.py — Roblox UI 无头可视化测试 CLI（RobloxUi 开发专家 Skill 
     --max-seconds N   场景最大虚拟秒数，默认 300
     --pump-after N    场景结束后额外推进的虚拟秒数，默认 1
     --no-final-snapshot  场景未产生快照时不补拍结束快照
+    --no-builtin-libs 不自动挂载内置 Lucide 离线桩（默认自动挂载）
     --output FILE     完整输出同时写入文件
 退出码：0 = 全部通过；1 = 有失败断言或运行错误；2 = 用法/加载错误
 """
@@ -30,6 +31,9 @@ import io
 import os
 import sys
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auto_libs import with_builtin_libs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = ["mock_runtime.lua", "vision.lua", "harness.lua"]
@@ -100,6 +104,8 @@ def main():
     ap.add_argument("--max-seconds", type=float, default=300.0)
     ap.add_argument("--pump-after", type=float, default=1.0)
     ap.add_argument("--no-final-snapshot", action="store_true")
+    ap.add_argument("--no-builtin-libs", action="store_true",
+                    help="不自动挂载内置 Lucide 离线桩（默认自动挂载；显式 --lib 同名 URL 优先）")
     ap.add_argument("--output", default=None)
     ap.add_argument("--emit-json", action="store_true",
                     help="结尾额外打印带哨兵的引擎报告 JSON（draws 等），供 HTML 预览/离线渲染使用")
@@ -127,7 +133,8 @@ def main():
     scenario_name = os.path.basename(args.scenario)
 
     cache_dir = os.path.join(HERE, ".cache")
-    libs = [parse_lib(spec, cache_dir) for spec in args.lib]
+    lib_specs = with_builtin_libs(args.lib, not args.no_builtin_libs)
+    libs = [parse_lib(spec, cache_dir) for spec in lib_specs]
 
     # 脚本装载
     sources = {}

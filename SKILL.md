@@ -45,7 +45,9 @@ Roblox-Ui-Expert-Skill/
 │   │                         #   执行器 FS（HttpGet/loadstring/getcustomasset/request）
 │   ├── vision.lua            # 布局引擎 + 渲染器：算绝对矩形、结构树/ASCII、绘制列表
 │   ├── harness.lua           # 场景驱动：check/pump/tapUI/fireUI/Snapshot/StartCapture
+│   │                         #   + 报告（含 httpMisses 未注册资源诊断）
 │   ├── icons.py              # 图标资源：lucide SVG 解析 / 光栅化 / 位图缓存
+│   ├── auto_libs.py          # CLI 共用：内置 Lucide 离线桩自动注册（显式 --lib 优先）
 │   ├── run_ui.py             # CLI（lupa/Lua 5.5 路径）：文本报告 + 断言
 │   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：PNG / HTML / APNG / JSON
 │   ├── render_hires.py       # 矢量 PNG 渲染（含图标）与 APNG 合成
@@ -61,8 +63,9 @@ Roblox-Ui-Expert-Skill/
 │   ├── rich_scenario.lua     # 富特性场景（16 条断言）
 │   ├── anim_ui.lua           # 动效 UI（补间入场 + 错开延迟 + 心跳脉冲 + 扫描条 + 图标）
 │   ├── anim_scenario.lua     # 动效场景（11 条断言）
-│   ├── delta_scenario.lua    # 真实大型库 DeltaUI 渲染自检（12 条断言）
-│   └── lucide_stub.lua       # lucide 图标模块离线桩（让真实库离线可跑）
+│   ├── compat_scenario.lua   # 运行时兼容性回归（16 条断言，双参数/HSV/桩/诊断）
+│   ├── delta_scenario.lua    # 真实大型库 DeltaUI 渲染自检（需外部源文件）
+│   └── lucide_stub.lua       # lucide 图标模块离线桩（CLI 自动挂载）
 └── references/
     ├── vision-api.md         # vision.lua + harness 全部 API
     ├── ui-pitfalls.md        # ≈25 条 Roblox UI 常见坑（审计清单）
@@ -230,9 +233,16 @@ countInstances / dumpWarnings / vclockNow / __HARNESS.summary`。
 | `examples/simple_scenario.lua` | **13/13**、0 错误（luau + lupa） |
 | `examples/rich_scenario.lua` | **16/16**、0 错误（luau + lupa） |
 | `examples/anim_scenario.lua` | **11/11**、0 错误（luau + lupa） |
-| `examples/delta_scenario.lua`（真实大型库 DeltaUI） | **12/12**、0 错误（luau + lupa） |
+| `examples/compat_scenario.lua`（运行时兼容性回归） | **16/16**、0 错误（luau + lupa） |
+| `examples/delta_scenario.lua`（真实大型库 DeltaUI） | 需外部 `DeltaUI.lua`；该库顶层对执行器环境依赖较强，当前环境无法完整搭建 UI，属已知遗留项 |
 
-任何改动 `mock_runtime.lua` / `vision.lua` 后先重跑这几条；新增断言不得让既有场景失败。
+任何改动 `mock_runtime.lua` / `vision.lua` / `harness.lua` 后先重跑这几条；新增断言不得让既有场景失败。
+
+> **渲染真实库前先记住**：`Instance.new(class, parent)` 双参数、`Color3:ToHSV()` /
+> `Color3.fromHSV()` 已内置；Lucide 的 `init.lua` CDN URL 由两个 CLI 通过
+> `scripts/auto_libs.py` **自动挂载内置离线桩**（`--no-builtin-libs` 可关闭，显式 `--lib` 优先）。
+> 不要在场景脚本里再手写这些 shim。若图标全丢，先看运行汇总的
+> `未注册 HttpGet URL` 与 JSON 报告的 `httpMisses` 字段——那里会精确列出没映射的资源。
 两个运行时**共用同一套模块源码**，改动须同时兼容 lupa 与真实 luau（避免 `_G.*` 写入、
 避免同名局部导出如 `Enum = Enum`）。
 

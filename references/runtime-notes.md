@@ -295,3 +295,71 @@ python3 scripts/run_ui_luau.py \
   --out /tmp/ui_render_luau.png
 # 期望：13/13 通过、0 错误，并生成 /tmp/ui_render_luau.png
 ```
+
+---
+
+## 渲染真实 Roblox UI 库时的三类「静默失败」
+
+用本 Skill 审计第三方 UI 库（数千~数万行、以 `loadstring(game:HttpGet(URL))()` 加载）时，
+最常见的不是布局错，而是**整屏元素莫名缺失/图标全丢，且一条报错都没有**。历次排查
+沉淀如下，相关兼容已固化进运行时与 CLI，**不要再在场景脚本里手写 shim**。
+
+### 1. `Instance.new(class, parent)` 的第二参数被吞掉 → 实例树散架
+
+绝大多数真实库用双参数直接挂载父级。早期 mock 的 `Instance.new(className)` 只接一个
+参数，第二个 `parent` 被静默忽略，于是 `Instance.new("Frame", holder)` 创建出一个
+**Parent 为 nil 的孤儿节点**。表现：结构树里只有零星几个实例、drawList 几乎为空、
+所有断言报 `count=0`，但完全没有报错。
+
+现在 `Instance.new(className, parent)` 会真正写入 `self.Parent`（走 `__newindex` 的
+父子挂载逻辑），单参数行为不变。`examples/compat_scenario.lua` 有专项断言。
+
+> 排查手法：在场景里 dump `guiRoot()` 与 `#parent:GetChildren()`；若后者为 0 而代码
+> 明明大量创建子级，先怀疑双参数挂载。
+
+### 2. `Color3:ToHSV()` / `Color3.fromHSV()` 缺失 → 整个示例协程中断
+
+含 ColorPicker 的库会调用 `def:ToHSV()` 取初始色相，并用 `Color3.fromHSV(h,s,v)` 反算。
+缺这两个方法时，`loadstring` 后的场景协程在遇到 ColorPicker 时抛错**直接终止**，
+后续控件、Tab 全部不再创建。表现：Tab 列表少一两项、某些控件凭空消失。
+
+现在两者已内置（含静态 `Color3.toHSV(c)`），HSV 往返精度 ≤1/255。Color3 值用共享
+元表 `Color3MT.__index` 挂方法，`typeof` 依赖的 `rawget(v, "__color3")` 标记与
+`colorOf` 读取的 `R/G/B` 字段均不受影响。
+
+### 3. `loadLucide()` 静默失败 → 全部图标不渲染
+
+真实库普遍从 CDN 下载 `lucide/init.lua`，取到模块后调 `module.GetAsset(name)` 设置
+`ImageLabel.Image`。mock 的 `HttpGet` 对未注册 URL 返回空串，于是 `loadLucide()` 判定
+下载失败并 `return nil`，`applyIcon` 对**每个**图标静默返回 false。表现：整屏没有一个
+图标，PNG 里控件方块空空如也，而 warnings / errors 都是 0。
+
+现在的处理：
+
+- `scripts/auto_libs.py` 让两个 CLI **自动**把已知的 3 个 Lucide `init.lua` CDN URL
+  映射到仓库自带的 `examples/lucide_stub.lua`；用户 `--lib` 显式注册的同名 URL 优先，
+  `--no-builtin-libs` 可关闭。
+- 桩返回 `rbxasset://lucide-stub/<name>`，渲染器 `icons.icon_name()` 能识别并还原为
+  lucide 矢量图标；配合 `--offline` + `assets/icons.json` 可全程离线。
+- **所有未被注册的 `HttpGet` / `HttpGetAsync` / `request` URL** 会去重记录到
+  `__MOCK.httpMisses`，并出现在运行汇总（`未注册 HttpGet URL`）与 JSON 报告的
+  `httpMisses` 字段。该通道**刻意不计入 `M.warnings`**，以免破坏既有场景里
+  `dumpWarnings() == 0` 一类的断言。
+
+> 排查手法：先看汇总的 `未注册 HttpGet URL` 列表。若关掉自动桩复现，会精确列出那
+> 3 个 Lucide URL 且 `imageRef` 数量归 0——这是判断「图标为什么没了」最快的信号。
+
+### 两条执行路径的 `typeof` 差异（写跨路径断言时注意）
+
+真实 luau 解释器有**内建 `typeof`**，它把 mock 用普通 table 模拟的 Color3 / Vector3
+等值一律判为 `"table"`；lupa 路径用的是 mock 自定义的 `typeof`（按 `__color3` 等标记
+返回 `"Color3"`）。这是**既有行为差异**，不是回归。因此跨平台回归场景不要用
+`typeof(c) == "Color3"` 做断言，改用 `rawget(c, "__color3")` 之类与运行时无关的方式。
+
+### 已知遗留项
+
+`examples/delta_scenario.lua` 依赖外部 `DeltaUI.lua` 源文件，且该库顶层对执行器环境
+（`CoreGui` / `VirtualUser` / 各类执行器全局）依赖较强；当前环境即便把 `CoreGui` 补成
+真实 Folder，其 UI 仍无法完整搭建（顶层有被 `pcall` 吞掉的兼容问题）。这属于该库自身的
+保真缺口，与 `mock_runtime` / `vision` 的常规能力无关；simple / rich / anim / compat
+四个场景是当前可稳定复现的回归基线。

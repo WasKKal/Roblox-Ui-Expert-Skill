@@ -324,6 +324,7 @@ function EmitReport(path)
         checks = { pass = H.checks.pass, fail = H.checks.fail },
         errors = H.errors,
         warnings = M.warnings,
+        httpMisses = M.httpMisses,
         tweenCount = #M.tweenLog,
     }
     -- 结构树（可选）：文本报告里已打印结构树，JSON 默认不带（省一半负载与一次全树布局）
@@ -370,6 +371,11 @@ function H.summary()
     local nw = #M.warnings
     print(string.format("mock 警告: %d 条", nw))
     if nw > 0 then dumpWarnings() end
+    local misses = M.httpMisses or {}
+    if #misses > 0 then
+        print(string.format("未注册 HttpGet URL: %d 个（这些资源在无头环境返回空串）", #misses))
+        for _, u in ipairs(misses) do print("  ? " .. u) end
+    end
     if #H.errors > 0 then
         print(string.format("错误: %d 条", #H.errors))
         for _, e in ipairs(H.errors) do print("  ! " .. e) end

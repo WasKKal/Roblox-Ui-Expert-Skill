@@ -44,6 +44,13 @@ python3 scripts/run_ui_luau.py \
 # 4) 本地预览服务：上传任意 .lua 就渲染，可在画布上点击交互
 python3 scripts/preview_server.py --port 8765
 #    打开 http://127.0.0.1:8765/ ，或 ?demo=simple|rich|anim|delta 直达内置示例
+
+# 5) 渲染真实 UI 库：只需映射库 URL，Lucide CDN 桩由 CLI 自动补齐
+python3 scripts/run_ui_luau.py \
+  --lib "https://ghfast.top/https://raw.githubusercontent.com/OWNER/REPO/main/MyLib.lua=/path/MyLib.lua" \
+  --scenario my_scenario.lua --out /workspace/mylib.png --offline
+#    my_scenario.lua 里直接 loadstring(game:HttpGet(<库 URL>))() 即可，
+#    无需为 Instance.new 双参数 / Color3 HSV / Lucide 图标手写任何 shim
 ```
 
 ## 目录结构
@@ -54,16 +61,19 @@ Roblox-Ui-Expert-Skill/
 ├── scripts/
 │   ├── mock_runtime.lua    # 无头运行时（Instance/Enum/Signal/Tween/task/输入/执行器 FS）
 │   ├── vision.lua          # 布局引擎 + 结构树/ASCII + 绘制列表
-│   ├── harness.lua         # 场景驱动 + 断言 + 动画帧捕获
+│   ├── harness.lua         # 场景驱动 + 断言 + 动画帧捕获 + 报告（含 httpMisses）
 │   ├── icons.py            # 图标资源（lucide SVG / 光栅化 / 位图）
+│   ├── auto_libs.py        # CLI 共用：内置 Lucide 离线桩自动注册（显式 --lib 优先）
 │   ├── run_ui.py           # CLI：文本报告（lupa / Lua 5.5）
 │   ├── run_ui_luau.py      # CLI：PNG / HTML / APNG / JSON（真实 luau）
 │   ├── render_hires.py     # 矢量 PNG + APNG 渲染
 │   ├── render_html.py      # DOM+CSS → 自包含可交互 HTML
 │   └── preview_server.py   # 本地预览服务（上传 + 交互点击）
 ├── assets/fonts/           # Roblox 同源字体（Source Sans 3、Inter）
-├── assets/icons/           # lucide 图标 SVG 缓存（约 150 个）
-├── examples/               # simple / rich / anim / delta 场景与示例 UI
+├── assets/icons.json       # 打包的 lucide 图标 SVG（离线渲染用）
+├── assets/icons/           # 按需下载的 lucide SVG 缓存（不入库）
+├── examples/               # simple / rich / anim / compat / delta 场景与示例 UI
+│   └── lucide_stub.lua     # 内置 Lucide 离线桩（CLI 自动挂载）
 └── references/             # vision-api · ui-pitfalls · runtime-notes
 ```
 
@@ -94,6 +104,25 @@ Roblox-Ui-Expert-Skill/
 | 交互 | `hitTest` 命中测试 + `tapUI` 派发点击 → 重放重渲染（预览页可直接点画布） |
 | 动画 | 逐帧采样 → APNG（Alpha 保真）+ HTML 时间轴播放器 |
 
+## 真实库开箱即用（无需在场景里打补丁）
+
+渲染真实 Roblox UI 库时最常见、也最难排查的三类「静默失败」，运行时与 CLI 已直接兜底，
+调用方不再需要手写兼容 shim：
+
+| 能力 | 说明 |
+|------|------|
+| `Instance.new(class, parent)` 双参数 | 真实库普遍用第二参数直接挂载父级；mock 现在会真正写入 `Parent` 并纳入实例树（单参数行为不变） |
+| `Color3:ToHSV()` / `Color3.fromHSV()` | ColorPicker 依赖的标准方法；`Color3.toHSV(c)` 静态形式亦提供，HSV 往返精度 ≤1/255 |
+| Lucide 离线桩自动注册 | CLI 默认把已知的 `lucide/init.lua` CDN URL 自动映射到仓库自带的 `examples/lucide_stub.lua`，`loadLucide()` 不再因 `HttpGet` 返回空串而静默丢失全部图标 |
+| 未命中 URL 诊断 | 未被 `--lib` 注册的 `HttpGet` / `request` URL 会去重记录到 `__MOCK.httpMisses`，并在运行汇总、JSON 报告 `httpMisses` 字段中列出；**不计入 warnings**，不影响既有断言 |
+
+规则与开关：
+
+- 用户通过 `--lib URL=PATH` 显式注册的同名 URL **始终优先**，自动桩只补空缺。
+- `--no-builtin-libs` 可完全关闭自动桩（用于复现「图标静默失败」或测试真实 CDN）。
+- 自动桩让 `loadLucide()` 拿到模块后，`Image` 被设为 `rbxasset://lucide-stub/<name>`，
+  渲染器据此还原 lucide 矢量图标；配合 `--offline` 与 `assets/icons.json` 可全程离线出图。
+
 ## 验证清单
 
 | 场景 | 期望 |
@@ -101,7 +130,11 @@ Roblox-Ui-Expert-Skill/
 | `examples/simple_scenario.lua` | 13/13、0 错误（luau + lupa） |
 | `examples/rich_scenario.lua` | 16/16、0 错误（luau + lupa） |
 | `examples/anim_scenario.lua` | 11/11、0 错误（luau + lupa） |
-| `examples/delta_scenario.lua`（真实库 DeltaUI） | 12/12、0 错误（luau + lupa） |
+| `examples/compat_scenario.lua`（兼容性回归） | 16/16、0 错误（luau + lupa） |
+| `examples/delta_scenario.lua`（真实库 DeltaUI） | 需外部 `DeltaUI.lua` 源文件；该库顶层对执行器环境依赖较强，当前环境无法完整搭建 UI，属已知遗留项 |
+
+> 说明：真实库用 `loadstring(game:HttpGet(...))()` 加载时，只需把库 URL 用 `--lib URL=PATH`
+> 映射到本地文件即可；Lucide 三个 CDN URL 由 CLI 自动补齐，无需手动逐个注册。
 
 ## 许可
 

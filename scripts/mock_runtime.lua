@@ -144,11 +144,52 @@ function Vector3.new(x, y, z)
 end
 
 Color3 = {}
+local Color3MT = {}
+Color3MT.__index = Color3MT
+function Color3MT:ToHSV()
+    local r, g, b = self.R or 0, self.G or 0, self.B or 0
+    local mx = math.max(r, g, b)
+    local mn = math.min(r, g, b)
+    local d = mx - mn
+    local h = 0
+    if d > 0 then
+        if mx == r then h = ((g - b) / d) % 6
+        elseif mx == g then h = (b - r) / d + 2
+        else h = (r - g) / d + 4 end
+        h = h / 6
+        if h < 0 then h = h + 1 end
+    end
+    local s = (mx == 0) and 0 or (d / mx)
+    return h, s, mx
+end
 function Color3.new(r, g, b)
-    return marker({ R = r or 0, G = g or 0, B = b or 0 }, "color3")
+    return setmetatable(marker({ R = r or 0, G = g or 0, B = b or 0 }, "color3"), Color3MT)
 end
 function Color3.fromRGB(r, g, b)
     return Color3.new((r or 0) / 255, (g or 0) / 255, (b or 0) / 255)
+end
+function Color3.fromHSV(h, s, v)
+    h = h or 0
+    s = s or 0
+    v = v or 1
+    h = h % 1
+    local i = math.floor(h * 6)
+    local f = h * 6 - i
+    local p = v * (1 - s)
+    local q = v * (1 - f * s)
+    local t = v * (1 - (1 - f) * s)
+    local r, g, b
+    local m = i % 6
+    if m == 0 then r, g, b = v, t, p
+    elseif m == 1 then r, g, b = q, v, p
+    elseif m == 2 then r, g, b = p, v, t
+    elseif m == 3 then r, g, b = p, q, v
+    elseif m == 4 then r, g, b = t, p, v
+    else r, g, b = v, p, q end
+    return Color3.new(r, g, b)
+end
+function Color3.toHSV(c)
+    return Color3MT.ToHSV(c)
 end
 function Color3.toRGB(c)
     return math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5)
@@ -517,7 +558,7 @@ function InstanceMT.__newindex(self, key, value)
     end
 end
 
-function Instance.new(className)
+function Instance.new(className, parent)
     if type(className) ~= "string" then error("Instance.new 需要字符串类名", 2) end
     if VALUE_TYPES[className] then
         error(string.format("Unable to create an Instance of type \"%s\"", className), 2)
@@ -533,6 +574,9 @@ function Instance.new(className)
     rawset(self, "_destroyed", false)
     if className == "ScreenGui" then
         M.screenGuis[#M.screenGuis + 1] = self
+    end
+    if parent ~= nil then
+        self.Parent = parent
     end
     return self
 end
@@ -1265,6 +1309,8 @@ local StarterGui = Instance.new("Folder")
 StarterGui.Name = "StarterGui"
 local PlayerGui = Instance.new("Folder")
 PlayerGui.Name = "PlayerGui"
+local CoreGui = Instance.new("Folder")
+CoreGui.Name = "CoreGui"
 
 Services = {
     Workspace = Workspace,
@@ -1287,6 +1333,8 @@ Services = {
         }, { __index = function() return { GetValue = function() return 0 end } end }),
         GetTotalMemoryUsageMb = function() return 512 end,
     }, { __index = function() return universalStub end }),
+    CoreGui = CoreGui,
+    VirtualUser = makeStub("VirtualUser"),
     SoundService = makeStub("SoundService"),
     CollectionService = makeStub("CollectionService"),
     ContentProvider = makeStub("ContentProvider"),
@@ -1305,6 +1353,19 @@ M.RegisterLib = function(url, content)
     libRegistry[url] = content
 end
 
+-- 记录未被 --lib 注册的 HttpGet / request URL。仅作诊断提示，不计入 warnings，
+-- 这样「库里悄悄 HttpGet 了一个没映射的资源」不再无声无息，也不会破坏
+-- 现有场景里 dumpWarnings() == 0 一类的断言。
+M.httpMisses = {}
+local seenHttpMiss = {}
+local function noteHttpMiss(url)
+    local key = tostring(url)
+    if seenHttpMiss[key] then return end
+    seenHttpMiss[key] = true
+    M.httpMisses[#M.httpMisses + 1] = key
+end
+M.noteHttpMiss = noteHttpMiss
+
 game = {
     PlaceId = 0,
     GameId = 0,
@@ -1322,10 +1383,14 @@ game = {
     HttpGet = function(_, url)
         local c = libRegistry[url]
         if c then return c end
+        noteHttpMiss(url)
         return ""
     end,
    HttpGetAsync = function(_, url)
-        return libRegistry[url] or ""
+        local c = libRegistry[url]
+        if c then return c end
+        noteHttpMiss(url)
+        return ""
     end,
 }
 M.game = game
@@ -1492,6 +1557,7 @@ local function mockRequest(opts)
     if c ~= nil then
         return { StatusCode = 200, Body = c, Success = true }
     end
+    noteHttpMiss(url)
     return { StatusCode = 404, Body = "", Success = false }
 end
 request = mockRequest

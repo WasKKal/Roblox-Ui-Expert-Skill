@@ -38,6 +38,7 @@ run_ui_luau.py — 用【真实 Luau 解释器】执行 UI 代码并渲染出 PN
     --offline         不联网获取图标资源（只用本地 assets/icons 缓存）
     --click X,Y       场景后在该点命中并派发点击（可多次），用于交互式重渲染
     --dump-json FILE  把引擎报告 JSON 落盘（可用 render_hires.py 离线重渲染）
+    --no-builtin-libs 不自动挂载内置 Lucide 离线桩（默认自动挂载；显式 --lib 同名 URL 优先）
     --max-seconds N   场景最大虚拟秒数，默认 300
     --pump-after N    场景结束后额外推进的虚拟秒数，默认 1
     --luau PATH       luau 可执行路径（默认自动探测）
@@ -63,6 +64,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auto_libs import with_builtin_libs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = ["mock_runtime.lua", "vision.lua", "harness.lua"]
@@ -212,6 +216,8 @@ def main():
     ap.add_argument("--offline", action="store_true",
                     help="不联网获取图标资源（只用本地 assets/icons 缓存）")
     ap.add_argument("--dump-json", default="", help="把引擎报告 JSON 落盘（便于离线重渲染）")
+    ap.add_argument("--no-builtin-libs", action="store_true",
+                    help="不自动挂载内置 Lucide 离线桩（默认自动挂载；显式 --lib 同名 URL 优先）")
     ap.add_argument("--click", action="append", default=[],
                     help="X,Y：场景结束后依次在该点做命中测试并派发点击（可多次），用于交互式重渲染")
     args = ap.parse_args()
@@ -233,7 +239,8 @@ def main():
     if not os.path.exists(args.scenario):
         fail("场景文件不存在: " + args.scenario)
     scenario_src = read_text(args.scenario)
-    libs = [parse_lib(s) for s in args.lib]
+    lib_specs = with_builtin_libs(args.lib, not args.no_builtin_libs)
+    libs = [parse_lib(s) for s in lib_specs]
 
     for name in SCRIPTS:
         if not os.path.exists(os.path.join(HERE, name)):

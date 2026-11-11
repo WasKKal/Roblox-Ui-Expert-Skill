@@ -356,13 +356,24 @@ python3 scripts/run_ui_luau.py \
 返回 `"Color3"`）。这是**既有行为差异**，不是回归。因此跨平台回归场景不要用
 `typeof(c) == "Color3"` 做断言，改用 `rawget(c, "__color3")` 之类与运行时无关的方式。
 
-### 已知遗留项
+### 已解决：DeltaUI 静默失败（曾被误判为「执行器环境保真缺口」）
 
-`examples/delta_scenario.lua` 依赖外部 `DeltaUI.lua` 源文件，且该库顶层对执行器环境
-（`CoreGui` / `VirtualUser` / 各类执行器全局）依赖较强；当前环境即便把 `CoreGui` 补成
-真实 Folder，其 UI 仍无法完整搭建（顶层有被 `pcall` 吞掉的兼容问题）。这属于该库自身的
-保真缺口，与 `mock_runtime` / `vision` 的常规能力无关；simple / rich / anim / compat
-四个场景是当前可稳定复现的回归基线。
+`examples/delta_scenario.lua` 曾长期只有 3/12 通过、`countInstances()=0`，一度被归因于
+「库顶层对 `CoreGui` / 执行器全局依赖较强」。实际根因与执行器环境探测无关：
+
+- `auto_libs.py` 只注册了 `@lucide-v6` 的三个 Lucide URL，而 DeltaUI 的 `LoadLucide()`
+  请求 `@latest` / `master` 两个分支 URL 作为兜底，全部落空后进入
+  `for _ = 1, 2 do ... task.wait(0.3) end` 重试（共 4 次 = 1.2 虚拟秒），叠加
+  `Translate.json` 的 3 次 `task.wait(0.5)`；
+- 库顶层是「执行即建 UI」结构，`screenGui = create("ScreenGui", ...)` 在约第 4882 行，
+  前面的网络等待把它推到场景 `pump(2.0)` 之外；
+- 结果 `[PASS] 编译成功` 但零实例、零报错、零警告——典型的静默失败。
+
+补齐两个 URL 后立刻得到 638 实例 / 1 ScreenGui / 73 draws / 9 Tween；不带 delta-mode
+为 12/12，带 `--delta-mode getfenv_real` 为 19/19（双路径）。排查手法：先用
+`pcall` 直接执行库顶层拿不到错误（因为它在 `task.wait` 处 yield），改用
+`task.spawn(fn)` + 打印 `#__MOCK.screenGuis` / `countInstances()`，再看
+`httpMisses` 里未注册的 URL——比猜「环境不兼容」有效得多。
 
 ### 渲染精度：圆角描边不贴合 + 文字微微偏移（render_hires.py / render_html.py）
 
@@ -400,3 +411,41 @@ python3 scripts/run_ui_luau.py \
 - 真实常驻脚本（`while task.wait(...) do` / `while true do`）在无头虚拟时钟里不会
   自然终止，`--max-seconds` 默认 300 会跑非常久。这类脚本只做有限 API 断言，
   不做完整执行回归。
+
+### Delta 执行器环境特征：`_G` 空表 / `REAL_ENV` / 模式矩阵
+
+来源 `delta_mock.txt`（红蓝对抗 + 复杂脚本验证用）分两层：A 层是通用执行器代理
+（`_G` 可写代理 + 活 globals 双写、执行器函数族、`checkcaller` 恒 true、
+`iscclosure` 的 `C_SET` + `debug.getinfo().what=="C"` 判定、`debug`/`bit`、`typeof`
+标记识别、`InstanceMT` 的 `FindFirstChildOfClass` / `Destroy` / `AbsolutePosition` /
+`AbsoluteSize` / Signal autovivify、服务 mock）——这些 `mock_runtime.lua` 与
+`executor_api.lua` 已覆盖。B 层才是 Delta 指纹，由新增的 `delta_env.lua` 实现：
+
+- **`_G` 是 0 字段空共享表（或 nil）**，`getgenv()` 返回独立的 `REAL_ENV`
+  （`setmetatable({}, {__index = 真实全局})`），两者不相等；
+- `getfenv()` 4 态、`getrenv()` 3 态、`setfenv` no-op，由 9 种 `DELTA_MODE` 组合；
+- `DBG_SNAP` 给空 `_G` 装 `__index` 记录器，`DBGDUMP()` 打印 `MISSING_KEYS`；
+- 启动时打印 `[delta-sim] MODE=... _G=... getfenv=... getgenv=... game=...`。
+
+实现上踩过的坑（都固化在代码注释里）：
+
+1. **加载时机**：`apply()` 会覆盖 `getfenv` / `getgenv` 等裸全局，必须在
+   `mock_runtime / executor_api / vision / harness` **全部加载完之后**注入；否则
+   `executor_api.lua` 模块加载阶段的 `getfenv(0)` 会拿到错表，`H.runScenario`
+   也会编译失败。工具内部靠裸全局名共享状态、不依赖 `_G`，所以把 `_G` 换成空表
+   不会破坏渲染引擎。
+2. **`rawget` 陷阱**：`REAL_ENV` 有 `__index` 回落，用 `REAL_ENV.getgenv` 取值会把
+   工具已有的 `getgenv/getfenv/getrenv` 全局「带回来」，使「该模式缺失」的判定
+   全部失真。必须用 `rawget(REAL_ENV, name)` 读 Delta 层显式定义的值。差分场景
+   初版因此出现 11 条 FAIL，改为 rawget 后 106/106 通过。
+3. **luau 的 `_G` 只读**：不能像 lupa 那样 `rawset(G, "_G", {})` 置空；
+   `apply()` 对每一项 `pcall` 降级，把「此运行时不可用」记进
+   `DeltaEnv.report().readonly`，绝不中断渲染。`getfenv` 在 luau 下由环境元表提供，
+   但在所有模块加载完之后覆盖是安全的（18/18 双路径矩阵已验证）。
+4. **可观测证据**：DeltaUI 顶层把整套 UI 写进它看到的 `_G`（场景 shim 绑定为
+   `getfenv()` = `REAL_ENV`），于是 `getgenv().__DeltaUI_screenGui` 有值，而共享
+   `_G` 仍是空表——这正是「`_G` = 0 字段空共享表」最直观的回归断言。
+
+诚实边界：`getfenv_err` / `no_getfenv` 等模式下，依赖 `getfenv()` 的库会像在真实
+Delta 变体上那样加载失败，这是差分验证要暴露的差异而非工具缺陷；`373/373` 与
+`9 模式 18/18` 都只说明环境语义覆盖，不代表模拟了执行器的真实副作用。

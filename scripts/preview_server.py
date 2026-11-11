@@ -38,6 +38,7 @@ sys.path.insert(0, HERE)
 
 from render_html import _CSS, _JS, FONT_FACE_CSS, collect_icons  # noqa: E402  复用同一套渲染器
 from run_ui_luau import extract_json  # noqa: E402  复用同一套哨兵 JSON 抽取
+from delta_modes import DELTA_MODES, DEFAULT_DELTA_MODE  # noqa: E402
 
 app = Flask(__name__)
 
@@ -114,12 +115,17 @@ __HARNESS.summary()
 """
 
 
-def _run_engine(engine, workdir, scenario_path, libs, viewport, clicks=None, timeout=300):
+def _run_engine(engine, workdir, scenario_path, libs, viewport, clicks=None,
+                timeout=300, delta_mode="", delta_snap=False):
     """调用 CLI 跑引擎，返回 (report dict or None, stdout 文本, 返回码)"""
     clicks = clicks or []
+    # Delta 执行器环境模拟：由 CLI 在所有引擎模块加载完之后注入 delta_env.lua
+    delta_args = ["--delta-mode", delta_mode] if delta_mode else []
+    if delta_mode and delta_snap:
+        delta_args.append("--delta-snap")
     if engine == "lupa":
         cmd = [sys.executable, RUN_LUPA, "--scenario", scenario_path,
-               "--viewport", viewport, "--max-seconds", "40", "--emit-json"]
+               "--viewport", viewport, "--max-seconds", "40", "--emit-json"] + delta_args
         for url, path in libs:
             cmd += ["--lib", "%s=%s" % (url, path)]
         # lupa 路径暂不支持交互点击（真实 luau 路径支持）
@@ -135,7 +141,7 @@ def _run_engine(engine, workdir, scenario_path, libs, viewport, clicks=None, tim
         return rep, txt, proc.returncode
 
     cmd = [sys.executable, RUN_LUAU, "--scenario", scenario_path,
-           "--viewport", viewport, "--max-seconds", "40", "--style", "none"]
+           "--viewport", viewport, "--max-seconds", "40", "--style", "none"] + delta_args
     for url, path in libs:
         cmd += ["--lib", "%s=%s" % (url, path)]
     for cx, cy in clicks:
@@ -165,7 +171,8 @@ def _clean_logs(text):
     return "\n".join(lines)
 
 
-def _render(main_bytes, main_name, scenario_text, engine, viewport, extra_files, clicks=None):
+def _render(main_bytes, main_name, scenario_text, engine, viewport, extra_files,
+            clicks=None, delta_mode="", delta_snap=False):
     workdir = tempfile.mkdtemp(prefix="ui_preview_")
     try:
         libs = []
@@ -194,7 +201,8 @@ def _render(main_bytes, main_name, scenario_text, engine, viewport, extra_files,
         with open(scen_path, "w", encoding="utf-8") as f:
             f.write(scen)
 
-        rep, logs, code = _run_engine(engine, workdir, scen_path, libs, viewport, clicks)
+        rep, logs, code = _run_engine(engine, workdir, scen_path, libs, viewport, clicks,
+                                     delta_mode=delta_mode, delta_snap=delta_snap)
         if rep is None:
             return {"ok": False, "error": "引擎未产出绘制列表（见日志）",
                     "logs": _clean_logs(logs), "exit": code}
@@ -218,7 +226,8 @@ SESSION_LOCK = threading.Lock()
 MAX_SESSIONS = 40
 
 
-def _new_session(main_bytes, main_name, scenario, engine, viewport, extras):
+def _new_session(main_bytes, main_name, scenario, engine, viewport, extras,
+                 delta_mode="", delta_snap=False):
     sid = uuid.uuid4().hex[:12]
     with SESSION_LOCK:
         if len(SESSIONS) >= MAX_SESSIONS:
@@ -226,6 +235,7 @@ def _new_session(main_bytes, main_name, scenario, engine, viewport, extras):
                 SESSIONS.pop(k, None)
         SESSIONS[sid] = {"main": main_bytes, "name": main_name, "scenario": scenario,
                          "engine": engine, "viewport": viewport, "extras": extras,
+                         "delta_mode": delta_mode, "delta_snap": delta_snap,
                          "clicks": []}
     return sid
 
@@ -235,7 +245,9 @@ def _render_session(sess, extra_click=None):
     if extra_click:
         clicks = clicks + [extra_click]
     return _render(sess["main"], sess["name"], sess["scenario"], sess["engine"],
-                   sess["viewport"], sess["extras"], clicks)
+                   sess["viewport"], sess["extras"], clicks,
+                   delta_mode=sess.get("delta_mode", ""),
+                   delta_snap=sess.get("delta_snap", False))
 
 
 @app.post("/api/render")
@@ -245,6 +257,12 @@ def api_render():
     if not re.match(r"^\d+x\d+$", viewport):
         viewport = "800x600"
     scenario = request.form.get("scenario", "")
+    delta_mode = request.form.get("mode", "")
+    if delta_mode == "off":
+        delta_mode = ""
+    if delta_mode and delta_mode not in DELTA_MODES:
+        return jsonify({"ok": False, "error": "未知 Delta 模式: " + delta_mode})
+    delta_snap = request.form.get("snap", "") in ("1", "true", "yes")
     up = request.files.get("file")
     if up is None or not up.filename:
         return jsonify({"ok": False, "error": "请先选择要渲染的 Lua 文件"})
@@ -253,9 +271,13 @@ def api_render():
     for f in request.files.getlist("extra"):
         if f and f.filename:
             extras.append((f.filename, f.read()))
-    d = _render(lib_bytes, up.filename, scenario, engine, viewport, extras)
+    d = _render(lib_bytes, up.filename, scenario, engine, viewport, extras,
+                delta_mode=delta_mode, delta_snap=delta_snap)
     if d.get("ok"):
-        d["sessionId"] = _new_session(lib_bytes, up.filename, scenario, engine, viewport, extras)
+        d["sessionId"] = _new_session(lib_bytes, up.filename, scenario, engine, viewport, extras,
+                                      delta_mode=delta_mode, delta_snap=delta_snap)
+        if delta_mode:
+            d["deltaMode"] = delta_mode
     return jsonify(d)
 
 
@@ -301,11 +323,18 @@ def api_demo():
         "rich": ("rich_ui.lua", "rich_scenario.lua"),
         "anim": ("anim_ui.lua", "anim_scenario.lua"),
     }
+    delta_mode, delta_snap = "", False
     if name == "delta":
         candidate = "/root/uploads/1791642772656330982-DeltaUI.lua.txt"
         if not os.path.exists(candidate):
             return jsonify({"ok": False, "error": "未找到 DeltaUI 上传文件"})
         lib, scen = candidate, os.path.join(EXAMPLES, "delta_scenario.lua")
+        # Delta 执行器环境模拟：?mode=<9 种模式>&snap=1
+        raw_mode = request.args.get("mode", DEFAULT_DELTA_MODE)
+        delta_mode = "" if raw_mode in ("", "off") else raw_mode
+        if delta_mode and delta_mode not in DELTA_MODES:
+            return jsonify({"ok": False, "error": "未知 Delta 模式: " + delta_mode})
+        delta_snap = request.args.get("snap", "") in ("1", "true", "yes")
     elif name in table:
         lib = os.path.join(EXAMPLES, table[name][0])
         scen = os.path.join(EXAMPLES, table[name][1])
@@ -328,10 +357,14 @@ def api_demo():
         main_name = "rich_ui.lua"
     elif name == "delta":
         main_name = "DeltaUI.lua"
-    d = _render(lib_bytes, main_name, scen_text, engine, viewport, [])
+    d = _render(lib_bytes, main_name, scen_text, engine, viewport, [],
+                delta_mode=delta_mode, delta_snap=delta_snap)
     if d.get("ok"):
-        d["sessionId"] = _new_session(lib_bytes, main_name, scen_text, engine, viewport, [])
+        d["sessionId"] = _new_session(lib_bytes, main_name, scen_text, engine, viewport, [],
+                                      delta_mode=delta_mode, delta_snap=delta_snap)
         d["demo"] = name
+        if delta_mode:
+            d["deltaMode"] = delta_mode
     return jsonify(d)
 
 
@@ -411,6 +444,20 @@ body { height: 100vh; }
     </select>
     <label>视口（WxH）</label>
     <input type="text" id="viewport" value="1280x800">
+    <label>Delta 执行器环境（DeltaUI / 环境差分时启用）</label>
+    <select id="deltamode">
+      <option value="getfenv_real" selected>getfenv_real · 默认 REAL_ENV</option>
+      <option value="getfenv_empty">getfenv_empty · getfenv→空 _G</option>
+      <option value="getfenv_err">getfenv_err · getfenv 抛错</option>
+      <option value="no_getfenv">no_getfenv · getfenv 缺失</option>
+      <option value="no_getgenv">no_getgenv · getgenv 缺失</option>
+      <option value="getrenv_real">getrenv_real · getrenv→REAL_ENV</option>
+      <option value="getrenv_empty">getrenv_empty · getrenv→空 _G</option>
+      <option value="getrenv_nil">getrenv_nil · getrenv→nil</option>
+      <option value="G_nil">G_nil · _G = nil</option>
+      <option value="off">关闭（普通执行器环境）</option>
+    </select>
+    <label><input type="checkbox" id="deltasnap" style="width:auto;vertical-align:middle"> DBG_SNAP 记录 _G 缺失键</label>
     <label>场景脚本（可选；留空则自动装配）</label>
     <textarea id="scenario" placeholder="留空 = 自动：加载库 → task.spawn 执行 → 若返回模块表则自动 new()/CreateWindow 并加示例控件"></textarea>
     <button class="go" id="go"><span class="go-txt">渲染</span><span class="spin">渲染中…</span></button>
@@ -547,6 +594,8 @@ $('go').onclick = () => {
   fd.append('engine', $('engine').value);
   fd.append('viewport', $('viewport').value.trim());
   fd.append('scenario', $('scenario').value);
+  fd.append('mode', $('deltamode').value);
+  fd.append('snap', $('deltasnap').checked ? '1' : '');
   render(fd, true);
 };
 
@@ -555,7 +604,9 @@ async function demo(name){
   setLogs('加载内置示例 ' + name + ' …');
   try {
     const res = await fetch(api('/api/demo?name=' + encodeURIComponent(name)
-      + '&engine=' + $('engine').value + '&viewport=' + encodeURIComponent($('viewport').value.trim())));
+      + '&engine=' + $('engine').value + '&viewport=' + encodeURIComponent($('viewport').value.trim())
+      + '&mode=' + encodeURIComponent($('deltamode').value)
+      + '&snap=' + ($('deltasnap').checked ? '1' : '')));
     const j = await res.json();
     if (j.logs) setLogs(colorize(j.logs));
     if (!j.ok) { setLogs(colorize((j.logs||'') + '\\n[ERROR] ' + (j.error||''))); return; }

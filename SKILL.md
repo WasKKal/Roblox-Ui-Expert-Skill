@@ -47,9 +47,12 @@ Roblox-Ui-Expert-Skill/
 │   ├── harness.lua           # 场景驱动：check/pump/tapUI/fireUI/Snapshot/StartCapture
 │   │                         #   + 报告（含 httpMisses 未注册资源诊断）
 │   ├── executor_api.lua      # 执行器 API 兼容层（373 个全局名：语义实现 + 存在性桩）
+│   ├── delta_env.lua         # Delta 执行器环境层（_G 空表 / REAL_ENV / 9 模式 / DBG_SNAP）
+│   ├── delta_modes.py        # Delta 模式清单（Python 侧单一数据源）
 │   ├── icons.py              # 图标资源：lucide SVG 解析 / 光栅化 / 位图缓存
 │   ├── auto_libs.py          # CLI 共用：内置 Lucide 离线桩自动注册（显式 --lib 优先）
 │   ├── check_api_support.py  # 执行器 API 支持率探针（lupa / luau 双路径）
+│   ├── check_delta_env.py    # Delta 环境 9 模式 × 双路径差分审计
 │   ├── check_render_precision.py  # 圆角描边 / 文字对齐几何精度自检（--strict 可用于 CI）
 │   ├── run_ui.py             # CLI（lupa/Lua 5.5 路径）：文本报告 + 断言
 │   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：PNG / HTML / APNG / JSON
@@ -69,7 +72,8 @@ Roblox-Ui-Expert-Skill/
 │   ├── compat_scenario.lua   # 运行时兼容性回归（16 条断言，双参数/HSV/桩/诊断）
 │   ├── real_script_api_scenario.lua  # 真实脚本关键 API 兼容（68 条断言）
 │   ├── ui_lib_stub.lua       # 远程 UI 库通用桩（验证 loadstring 加载链）
-│   ├── delta_scenario.lua    # 真实大型库 DeltaUI 渲染自检（需外部源文件）
+│   ├── delta_scenario.lua    # 真实大型库 DeltaUI 渲染自检（12/12；Delta 环境 19/19）
+│   ├── delta_env_scenario.lua# Delta 环境 9 模式语义差分（106 条断言）
 │   └── lucide_stub.lua       # lucide 图标模块离线桩（CLI 自动挂载）
 └── references/
     ├── vision-api.md         # vision.lua + harness 全部 API
@@ -116,6 +120,7 @@ python3 scripts/run_ui_luau.py \
 ```bash
 python3 scripts/preview_server.py --port 8765
 # 浏览器打开 http://127.0.0.1:8765/ ；?demo=simple|rich|anim|delta 直达内置示例
+# DeltaUI 示例可用 ?mode=<9 种模式>&snap=1 切换执行器环境（页面亦有模式下拉框）
 ```
 
 ### 两条执行路径
@@ -142,6 +147,8 @@ python3 scripts/preview_server.py --port 8765
 | `--cell 8x16` | ASCII 每格像素尺寸 |
 | `--max-seconds 300` | 场景最大虚拟时长 |
 | `--pump-after 1` | 场景结束后补拍的秒数 |
+| `--delta-mode MODE` | 启用 Delta 执行器环境模拟（9 种模式，两个 CLI 通用；见 README「Delta 执行器环境」） |
+| `--delta-snap` | 配合 `--delta-mode`：启用 `DBG_SNAP`，记录脚本对空 `_G` 的缺失键访问 |
 | `--output FILE` | 报告落盘 |
 
 `run_ui_luau.py` 额外参数：
@@ -243,7 +250,9 @@ countInstances / dumpWarnings / vclockNow / __HARNESS.summary`。
 | `examples/real_script_api_scenario.lua`（真实脚本关键 API） | **68/68**、0 错误 0 警告（luau + lupa） |
 | `scripts/check_render_precision.py --strict` | 7 项几何指标全部通过（圆角描边 / 文字对齐 / 主体落点） |
 | `scripts/check_api_support.py` / `--luau` | **373/373 · 100%**（执行器 API 存在性覆盖） |
-| `examples/delta_scenario.lua`（真实大型库 DeltaUI） | 需外部 `DeltaUI.lua`；该库顶层对执行器环境依赖较强，当前环境无法完整搭建 UI，属已知遗留项 |
+| `examples/delta_scenario.lua`（真实大型库 DeltaUI） | **12/12**（普通环境）/ **19/19**（`--delta-mode getfenv_real`），0 错误（luau + lupa） |
+| `examples/delta_env_scenario.lua` | **106/106**、0 错误（9 模式语义差分，单次运行） |
+| `scripts/check_delta_env.py` | **18/18**（9 模式 × lupa/luau） |
 
 任何改动 `mock_runtime.lua` / `vision.lua` / `harness.lua` / `executor_api.lua` /
 `render_hires.py` / `render_html.py` 后先重跑这几条；新增断言不得让既有场景失败。
@@ -254,9 +263,11 @@ countInstances / dumpWarnings / vclockNow / __HARNESS.summary`。
 
 > **渲染真实库前先记住**：`Instance.new(class, parent)` 双参数、`Color3:ToHSV()` /
 > `Color3.fromHSV()` 已内置；Lucide 的 `init.lua` CDN URL 由两个 CLI 通过
-> `scripts/auto_libs.py` **自动挂载内置离线桩**（`--no-builtin-libs` 可关闭，显式 `--lib` 优先）。
-> 不要在场景脚本里再手写这些 shim。若图标全丢，先看运行汇总的
-> `未注册 HttpGet URL` 与 JSON 报告的 `httpMisses` 字段——那里会精确列出没映射的资源。
+> `scripts/auto_libs.py` **自动挂载内置离线桩**（`--no-builtin-libs` 可关闭，显式 `--lib` 优先，
+> 已含 DeltaUI 的 `@latest` / `master` 兜底 URL）。不要在场景脚本里再手写这些 shim。
+> 若图标全丢或「编译成功却零实例」，先看运行汇总的 `未注册 HttpGet URL` 与 JSON 报告的
+> `httpMisses`——URL 落空会触发库内的 `task.wait` 重试循环，把顶层 UI 构建拖到
+> `pump()` 之外，形成零报错的静默失败（见 `references/runtime-notes.md`）。
 两个运行时**共用同一套模块源码**，改动须同时兼容 lupa 与真实 luau（避免 `_G.*` 写入、
 避免同名局部导出如 `Enum = Enum`）。
 

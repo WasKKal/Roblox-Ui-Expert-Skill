@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/Roblox-Luau-00a2ff?style=for-the-badge&logo=roblox" alt="Roblox Luau" />
   <img src="https://img.shields.io/badge/Renderer-Headless%20Vector-6f42c1?style=for-the-badge" alt="Headless Vector Renderer" />
   <img src="https://img.shields.io/badge/Executor%20API-373%2F373-3fb950?style=for-the-badge" alt="Executor API Coverage" />
+  <img src="https://img.shields.io/badge/Delta%20Env-9%20modes-orange?style=for-the-badge" alt="Delta Env Modes" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License" />
 </p>
 
@@ -17,7 +18,8 @@
 - 🎨 **矢量高清渲染** —— 超采样 + Roblox 同源字体，还原圆角、渐变、描边、边框、图标、裁剪、旋转、组透明度与文本对齐。
 - 📐 **像素级贴合** —— 同心圆角描边与字形 ink-bbox 对齐，附带可复现的几何精度自检（见「渲染精度」）。
 - 🔌 **执行器 API 兼容层** —— 覆盖真实执行器环境探测到的 **373 个全局 API**，让真实脚本不再因缺全局函数而中断。
-- 🧩 **真实库开箱即用** —— `Instance.new(class, parent)` 双参数、`Color3:ToHSV()`、Lucide 离线桩、`HttpGet` 未命中诊断全部内置，无需在场景里手写 shim。
+- 🅱️ **Delta 执行器环境模拟** —— 复刻 `_G` 空共享表、`getgenv()` 独立 `REAL_ENV`、`getfenv` / `getrenv` 多形态与 9 种 `DELTA_MODE`，可对真实库做红蓝对抗式差分验证。
+- 🧩 **真实库开箱即用** —— `Instance.new(class, parent)` 双参数、`Color3:ToHSV()`、Lucide 离线桩（含 DeltaUI 的 `@latest` / `master` 兜底 URL）、`HttpGet` 未命中诊断全部内置，无需在场景里手写 shim。
 - 🖱️ **交互与动画** —— 命中测试 + 点击派发、逐帧采样 APNG 与 HTML 时间轴播放器、本地预览服务。
 - 🔍 **静默失败可观测** —— 未注册的 `HttpGet` / `request` URL 单独记录，不污染 warnings 断言。
 - 🧪 **双执行路径** —— `lupa`（Lua 5.5，进程内）与真实 `luau` 解释器共用同一套 Lua 源码，结果一致。
@@ -60,7 +62,14 @@ python3 scripts/run_ui_luau.py \
   --lib "https://ghfast.top/https://raw.githubusercontent.com/OWNER/REPO/main/MyLib.lua=/path/MyLib.lua" \
   --scenario my_scenario.lua --out mylib.png --offline
 
-# 5) 本地预览服务：上传任意 .lua 即渲染，可在画布上点击交互
+# 5) Delta 执行器环境：渲染真实 DeltaUI（_G 空表 + getgenv 独立 REAL_ENV）
+python3 scripts/run_ui_luau.py \
+  --lib "https://mock.local/DeltaUI.lua=/path/DeltaUI.lua" \
+  --scenario examples/delta_scenario.lua --delta-mode getfenv_real \
+  --out delta.png --style both --scale 2
+python3 scripts/check_delta_env.py          # 9 模式 × 双路径差分矩阵
+
+# 6) 本地预览服务：上传任意 .lua 即渲染，可在画布上点击交互
 python3 scripts/preview_server.py --port 8765
 ```
 
@@ -73,7 +82,8 @@ python3 scripts/preview_server.py --port 8765
 | 渲染 | 圆角 / 描边 / 边框 / 渐变 / 图标 / 变换 | `scripts/render_hires.py`、`scripts/render_html.py` |
 | 输出 | 文本报告 / 结构树 / ASCII / PNG / HTML / APNG | `scripts/run_ui.py`、`scripts/run_ui_luau.py` |
 | 兼容 | 执行器 API 兼容层、内置 Lucide 离线桩自动注册 | `scripts/executor_api.lua`、`scripts/auto_libs.py` |
-| 自检 | 渲染几何精度、执行器 API 支持率、真实脚本 API 兼容 | `scripts/check_render_precision.py`、`scripts/check_api_support.py`、`examples/real_script_api_scenario.lua` |
+| Delta 环境 | `_G` 空表 / 独立 `REAL_ENV` / 9 模式矩阵 / `DBG_SNAP` | `scripts/delta_env.lua`、`scripts/delta_modes.py` |
+| 自检 | 渲染几何精度、执行器 API 支持率、Delta 环境差分、真实脚本 API 兼容 | `scripts/check_render_precision.py`、`scripts/check_api_support.py`、`scripts/check_delta_env.py`、`examples/real_script_api_scenario.lua` |
 | 交互 | 命中测试 / 点击重放 / 预览服务 | `scripts/preview_server.py` |
 
 ## 📐 渲染精度
@@ -129,6 +139,56 @@ Roblox 侧同步补齐：`Color3.fromHex/toHex`、`game:IsLoaded()` / `game.Load
 
 > 说明：两份真实脚本是**常驻外挂脚本**，含 `while task.wait(...) do` / `while true do` 主循环，无头虚拟时钟无法自然终止，因此不做完整执行回归；改用有限的 `real_script_api_scenario.lua` 断言其依赖 API，并用 `--lib` 把远程 UI 库映射到 `examples/ui_lib_stub.lua` 验证加载链。
 
+## 🅱️ Delta 执行器环境
+
+不同执行器对全局环境的处理并不一致。`delta_mock.txt`（红蓝对抗 / 复杂脚本验证用）刻画的 Delta 指纹是：**`_G` 是 0 字段空共享表（或 nil），`getgenv()` 返回独立的 `REAL_ENV` 代理，而不是 `_G`**；`getfenv` / `getrenv` 还有多种形态。把「`getgenv().X` 等价于 `_G.X`」当常识写的库，在 Delta 上会读到空值。
+
+`scripts/delta_env.lua` 把这些特征做成**可选环境层**，由 `--delta-mode` 在所有引擎模块加载完之后注入（工具内部靠裸全局名共享，不依赖 `_G`，因此替换 `_G` 不会破坏渲染引擎）：
+
+| Delta 特征 | 普通执行器环境 | Delta 模拟 |
+| --- | --- | --- |
+| `_G` | 真实可写全局 / 只读内建表 | **0 字段空共享表或 nil** |
+| `getgenv()` | `getfenv(0)` 真实全局 | **独立 `REAL_ENV`**（`__index` 回落真实全局），≠ `_G` |
+| `getfenv()` | 返回 `_G` | **4 态**：REAL_ENV / 空 `_G` / 抛错 / 缺失 |
+| `getrenv()` | 复制的 `_G` | **3 态**：REAL_ENV / 空 `_G` / 返回 nil |
+| `setfenv()` | no-op | no-op |
+| `checkcaller()` | 恒 true | 恒 true（差分信任，避免误杀） |
+| `iscclosure()` | 常量 false | `C_SET` 标记 + `debug.getinfo().what=="C"` 真判定 |
+| `DBG_SNAP` | 无 | 记录对空 `_G` 的缺失键访问，`DBGDUMP()` 输出 |
+
+9 种模式（单一数据源 `scripts/delta_modes.py` ↔ `DeltaEnv.MODES`）：
+
+```bash
+python3 scripts/check_delta_env.py                 # 9 模式 × lupa/luau，18 项全通过
+python3 scripts/check_delta_env.py --mode G_nil --json
+python3 scripts/run_ui.py --scenario examples/delta_env_scenario.lua \
+  --delta-mode getfenv_real --no-final-snapshot    # 单次运行 106 条语义断言
+```
+
+| 模式 | `_G` | `getgenv` | `getfenv` | `getrenv` |
+| --- | --- | --- | --- | --- |
+| `getfenv_real`（默认） | 空表 | → REAL_ENV | → REAL_ENV | 未定义 |
+| `getfenv_empty` | 空表 | → REAL_ENV | → 空 `_G` | 未定义 |
+| `getfenv_err` | 空表 | → REAL_ENV | 抛错 | 未定义 |
+| `no_getfenv` | 空表 | → REAL_ENV | 缺失 | 未定义 |
+| `no_getgenv` | 空表 | 缺失 | → 空 `_G` | 未定义 |
+| `getrenv_real` | 空表 | 缺失 | → 空 `_G` | → REAL_ENV |
+| `getrenv_empty` | 空表 | 缺失 | → 空 `_G` | → 空 `_G` |
+| `getrenv_nil` | 空表 | 缺失 | → 空 `_G` | → nil |
+| `G_nil` | **nil** | → REAL_ENV | → REAL_ENV | 未定义 |
+
+**DeltaUI 遗留项已解决**：此前 `examples/delta_scenario.lua` 只有 3/12 通过、`countInstances()=0`，一度被归因为「库顶层对执行器环境依赖较强」。实际根因是 `auto_libs.py` 只注册了 `@lucide-v6` 的三个 Lucide URL，而 DeltaUI 的 `LoadLucide()` 请求 `@latest` / `master` 两个 URL 全部落空，触发 4 次 `task.wait(0.3)` 重试，把顶层 UI 构建（约第 4882 行）拖到 `pump(2.0)` 之外——**编译成功但零实例、零报错的静默失败**。补齐 URL 后：
+
+| 指标 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 实例数 / ScreenGui | `0 / 0` | **`638 / 1`** |
+| 结构断言（`delta_scenario.lua`） | `3/12` | **`12/12`**；带 `--delta-mode` 为 **`19/19`**（双路径） |
+| 高清渲染 | 空画布 | **73 draws / 9 Tween / 0 错误 0 警告** |
+
+新增的 7 条 Delta 断言验证了一个可观测指纹：DeltaUI 顶层把整套 UI 写进它看到的 `_G`（经 shim 绑定为 `getfenv()` = `REAL_ENV`），`getgenv().__DeltaUI_screenGui` 有值，而**共享 `_G` 仍是空表**。预览服务的 DeltaUI 示例也提供模式下拉框（`?mode=` / `?snap=1`）。
+
+> 诚实边界：`getfenv_err` / `no_getfenv` 等模式下，依赖 `getfenv()` 的库会按真实 Delta 变体那样加载失败——这正是差分验证要暴露的差异，不是工具缺陷。luau 的 `_G` 为只读表，无法完全置空；`apply()` 逐项 `pcall` 降级并在 `[delta-sim]` / `DeltaEnv.report()` 中如实标注该运行时下不可用的特征。
+
 ## ✅ 验证清单
 
 | 场景 | 期望 |
@@ -138,15 +198,18 @@ Roblox 侧同步补齐：`Color3.fromHex/toHex`、`game:IsLoaded()` / `game.Load
 | `examples/anim_scenario.lua` | **11/11**、0 错误（luau + lupa） |
 | `examples/compat_scenario.lua` | **16/16**、0 错误（luau + lupa） |
 | `examples/real_script_api_scenario.lua` | **68/68**、0 错误 0 警告（luau + lupa） |
+| `examples/delta_scenario.lua`（真实库 DeltaUI） | **12/12**（普通环境）/ **19/19**（`--delta-mode getfenv_real`），0 错误（luau + lupa） |
+| `examples/delta_env_scenario.lua` | **106/106**、0 错误（9 模式语义差分，单次运行） |
+| `scripts/check_delta_env.py` | **18/18**（9 模式 × lupa/luau） |
 | `scripts/check_render_precision.py --strict` | 7 项几何指标全部通过 |
 | `scripts/check_api_support.py` | `373/373`（lupa + luau） |
-| `examples/delta_scenario.lua`（真实库 DeltaUI） | 需外部 `DeltaUI.lua`；该库顶层对执行器环境依赖较强，当前无法完整搭建 UI，属**已知遗留项** |
 
 ## 🎯 设计理念
 
 - **单一数据源**：布局引擎产出「每个 GuiObject 的精确矩形 + 样式」，PNG / HTML / APNG 三个渲染器共用同一份绘制列表，避免各写一套布局规则。
-- **双运行时一致**：`lupa` 与真实 `luau` 复用同一套 Lua 源码；差异（如内建 `typeof`）由场景断言显式规避，而非掩盖。
-- **静默失败可观测**：缺资源、缺全局不再无声无息——`httpMisses` 独立通道、支持率探针、几何自检共同构成可量化的回归网。
+- **双运行时一致**：`lupa` 与真实 `luau` 复用同一套 Lua 源码；差异（如内建 `typeof`、只读 `_G`）由场景断言显式规避，而非掩盖。
+- **环境可切换**：执行器环境不是硬编码常量，而是可选模块 + 模式矩阵；同一份 UI 源码可在普通 / 9 种 Delta 变体下重复渲染，差异由断言显式暴露。
+- **静默失败可观测**：缺资源、缺全局不再无声无息——`httpMisses` 独立通道、支持率探针、几何自检与环境差分共同构成可量化的回归网。
 - **兼容但不假装**：兼容层明确区分「语义实现」与「存在性桩」，文档与报告都不把存在性覆盖当成功能等价。
 
 ## 📄 许可证

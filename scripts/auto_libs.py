@@ -22,6 +22,11 @@ LUCIDE_URLS = (
     "https://gcore.jsdelivr.net/gh/WasKKal/DeltaExecutor-UI-Rebuild@lucide-v6/lucide/init.lua",
     "https://cdn.jsdelivr.net/gh/WasKKal/DeltaExecutor-UI-Rebuild@lucide-v6/lucide/init.lua",
     "https://raw.githubusercontent.com/WasKKal/DeltaExecutor-UI-Rebuild@lucide-v6/lucide/init.lua",
+    # DeltaUI 的 LoadLucide() 用 @latest / master 两个分支兜底；若未注册会走
+    # 4 次 task.wait(0.3) 重试，把整段顶层 UI 构建拖到虚拟时间之外，导致
+    # 「编译成功但 0 实例」的静默失败。见 references/runtime-notes.md。
+    "https://cdn.jsdelivr.net/gh/WasKKal/DeltaExecutor-UI-Rebuild@latest/lucide/init.lua",
+    "https://raw.githubusercontent.com/WasKKal/DeltaExecutor-UI-Rebuild/master/lucide/init.lua",
 )
 
 

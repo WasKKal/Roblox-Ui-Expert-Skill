@@ -67,6 +67,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auto_libs import with_builtin_libs
+from delta_modes import DELTA_MODES, DELTA_ENV_SCRIPT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = ["mock_runtime.lua", "executor_api.lua", "vision.lua", "harness.lua"]
@@ -218,9 +219,15 @@ def main():
     ap.add_argument("--dump-json", default="", help="把引擎报告 JSON 落盘（便于离线重渲染）")
     ap.add_argument("--no-builtin-libs", action="store_true",
                     help="不自动挂载内置 Lucide 离线桩（默认自动挂载；显式 --lib 同名 URL 优先）")
+    ap.add_argument("--delta-mode", default="",
+                    help="启用 Delta 执行器环境模拟（默认关闭）。可选: " + "|".join(DELTA_MODES))
+    ap.add_argument("--delta-snap", action="store_true",
+                    help="配合 --delta-mode：启用 DBG_SNAP，记录脚本对空 _G 的缺失键访问")
     ap.add_argument("--click", action="append", default=[],
                     help="X,Y：场景结束后依次在该点做命中测试并派发点击（可多次），用于交互式重渲染")
     args = ap.parse_args()
+    if args.delta_mode and args.delta_mode not in DELTA_MODES:
+        fail("未知 --delta-mode: " + args.delta_mode + "（可选: " + "|".join(DELTA_MODES) + "）", 2)
 
     try:
         vw, vh = (int(x) for x in args.viewport.lower().split("x"))
@@ -242,7 +249,8 @@ def main():
     lib_specs = with_builtin_libs(args.lib, not args.no_builtin_libs)
     libs = [parse_lib(s) for s in lib_specs]
 
-    for name in SCRIPTS:
+    script_names = list(SCRIPTS) + ([DELTA_ENV_SCRIPT] if args.delta_mode else [])
+    for name in script_names:
         if not os.path.exists(os.path.join(HERE, name)):
             fail("缺少脚本: " + os.path.join(HERE, name))
 
@@ -251,7 +259,7 @@ def main():
 
     # 模块源码 base64 内联
     mod_b64 = {}
-    for name in SCRIPTS:
+    for name in script_names:
         mod_b64[name] = b64(read_text(os.path.join(HERE, name)))
 
     tmp = tempfile.mkdtemp(prefix="robloxui_luau_")
@@ -295,6 +303,10 @@ def main():
             + "loadsrc([[executor_api.lua]], [[%s]])\n" % mod_b64["executor_api.lua"]
             + "Vision = loadsrc([[vision.lua]], [[%s]])\n" % mod_b64["vision.lua"]
             + "Harness = loadsrc([[harness.lua]], [[%s]])\n" % mod_b64["harness.lua"]
+            + (("DELTA_MODE = [[%s]]\nDELTA_SNAP = %s\n"
+                "DeltaEnv = loadsrc([[delta_env.lua]], [[%s]])\n")
+               % (args.delta_mode, "true" if args.delta_snap else "false",
+                  mod_b64[DELTA_ENV_SCRIPT]) if args.delta_mode else "")
             + "Vision.viewport = { w = %d, h = %d }\n" % (vw, vh)
             + "Vision.cell = { w = 8, h = 16 }\n"
             + "\n".join(reg_lines) + "\n"

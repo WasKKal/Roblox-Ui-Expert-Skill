@@ -197,6 +197,24 @@ end
 function Color3.lerp(a, b, t)
     return Color3.new(a.R + (b.R - a.R) * t, a.G + (b.G - a.G) * t, a.B + (b.B - a.B) * t)
 end
+function Color3.fromHex(hex)
+    local s = tostring(hex or ""):gsub("^#", "")
+    local r, g, b = 0, 0, 0
+    if #s == 3 then
+        r = tonumber(s:sub(1, 1) .. s:sub(1, 1), 16) or 0
+        g = tonumber(s:sub(2, 2) .. s:sub(2, 2), 16) or 0
+        b = tonumber(s:sub(3, 3) .. s:sub(3, 3), 16) or 0
+    elseif #s >= 6 then
+        r = tonumber(s:sub(1, 2), 16) or 0
+        g = tonumber(s:sub(3, 4), 16) or 0
+        b = tonumber(s:sub(5, 6), 16) or 0
+    end
+    return Color3.fromRGB(r, g, b)
+end
+function Color3.toHex(c)
+    local r, g, b = Color3.toRGB(c)
+    return string.format("#%02X%02X%02X", r, g, b)
+end
 
 ColorSequenceKeypoint = {}
 function ColorSequenceKeypoint.new(time, color)
@@ -627,7 +645,15 @@ end
 function InstanceMethods:WaitForChild(name, timeout)
     local c = self:FindFirstChild(name)
     if c then return c end
-    M.warn("WaitForChild 超时返回 nil: " .. tostring(name))
+    -- 真机超时也是静默返回 nil；脚本普遍用 `x and x:WaitForChild(...)` 判空，
+    -- 这里不该产生警告污染回归报告。
+    return nil
+end
+
+function InstanceMethods:SetCore(name, value)
+    return true
+end
+function InstanceMethods:GetCore(name)
     return nil
 end
 
@@ -1206,6 +1232,20 @@ local LocalPlayer = setmetatable({}, {
         if k == "Character" then return nil end
         if k == "PlayerGui" then return Services.PlayerGui end
         if k == "GetMouse" then return function() return M.mouseStub end end
+        -- 真实脚本普遍写 lp:WaitForChild("PlayerGui") / lp:FindFirstChild(...)
+        if k == "FindFirstChild" or k == "WaitForChild" then
+            return function(_, n)
+                if n == "PlayerGui" then return Services.PlayerGui end
+                return nil
+            end
+        end
+        if k == "Kick" or k == "Destroy" then return function() end end
+        if k == "DistanceFromCharacter" then return function() return 0 end end
+        if k == "GetRankInGroup" or k == "GetRoleInGroup" then
+            return function() return 0, "Guest" end
+        end
+        -- 事件类属性（CharacterAdded / Chatted / ...）统一给一个可用 Signal
+        if EVENT_KEYS[k] then return newSignal() end
         return nil
     end,
 })
@@ -1296,11 +1336,20 @@ local function makeStub(name)
 end
 
 local Workspace = setmetatable({
-    CurrentCamera = {
+    CurrentCamera = setmetatable({
         ViewportSize = Vector2.new(800, 600),
         CFrame = CFrame.new(0, 0, 0),
-    },
+        FieldOfView = 70,
+        WorldToViewportPoint = function(_, p) return Vector3.new(0, 0, 0), true end,
+        WorldToScreenPoint = function(_, p) return Vector3.new(0, 0, 0), true end,
+        GetRenderCFrame = function() return CFrame.new(0, 0, 0) end,
+    }, { __index = function() return universalStub end }),
     Gravity = 196.2,
+    DescendantAdded = newSignal(),
+    DescendantRemoving = newSignal(),
+    ChildAdded = newSignal(),
+    ChildRemoved = newSignal(),
+    Terrain = makeStub("Terrain"),
 }, { __index = function(_, k) M.warn("Workspace." .. tostring(k) .. " 未模拟") return nil end })
 
 local ReplicatedStorage = Instance.new("Folder")
@@ -1341,6 +1390,29 @@ Services = {
     MarketplaceService = makeStub("MarketplaceService"),
     Teams = makeStub("Teams"),
     PathfindingService = makeStub("PathfindingService"),
+    -- 常用服务：显式注册避免 GetService 未命中时产生「未模拟 service」警告。
+    -- makeStub 的通用代理可安全承接 :Connect / 任意方法调用。
+    LogService = makeStub("LogService"),
+    ProximityPromptService = makeStub("ProximityPromptService"),
+    ScriptContext = makeStub("ScriptContext"),
+    VirtualInputManager = makeStub("VirtualInputManager"),
+    ContextActionService = makeStub("ContextActionService"),
+    Debris = makeStub("Debris"),
+    HttpRbxApiService = makeStub("HttpRbxApiService"),
+    AssetService = makeStub("AssetService"),
+    TextChatService = makeStub("TextChatService"),
+    TeleportService = makeStub("TeleportService"),
+    GroupService = makeStub("GroupService"),
+    BadgeService = makeStub("BadgeService"),
+    InsertService = makeStub("InsertService"),
+    MemoryStoreService = makeStub("MemoryStoreService"),
+    DataStoreService = makeStub("DataStoreService"),
+    MessagingService = makeStub("MessagingService"),
+    PolicyService = makeStub("PolicyService"),
+    LocalizationService = makeStub("LocalizationService"),
+    Chat = makeStub("Chat"),
+    TestService = makeStub("TestService"),
+    ReplicatedFirst = Instance.new("Folder"),
 }
 M.Services = Services
 
@@ -1372,6 +1444,10 @@ game = {
     CreatorId = 0,
     JobId = "mock",
     Name = "MockPlace",
+    IsLoaded = function(_) return true end,
+    Loaded = newSignal(),
+    FindService = function(_, name) return Services[name] end,
+    GetObjects = function() return {} end,
     GetService = function(_, name)
         local s = Services[name]
         if s then return s end

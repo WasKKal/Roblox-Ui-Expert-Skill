@@ -363,3 +363,40 @@ python3 scripts/run_ui_luau.py \
 真实 Folder，其 UI 仍无法完整搭建（顶层有被 `pcall` 吞掉的兼容问题）。这属于该库自身的
 保真缺口，与 `mock_runtime` / `vision` 的常规能力无关；simple / rich / anim / compat
 四个场景是当前可稳定复现的回归基线。
+
+### 渲染精度：圆角描边不贴合 + 文字微微偏移（render_hires.py / render_html.py）
+
+现象：**只有「部分」线条不贴合**，且文字整体偏下约 2px。三个叠加原因：
+
+1. `render_hires.py` 里裁剪层局部原点写成 `ox = rx0 - x`（符号反了）。`rx0 = x - ex`，
+   正确应为 `x - rx0 = ex`。`ex` 只在元素带 `UIStroke` / `BorderSizePixel` 时才 > 0，
+   所以恰好是「部分」元素整体偏移 `ex` 像素、边角被裁掉——这就是「部分」的来源。
+2. `UIStroke` 原用 PIL `rounded_rectangle(..., width=th)` + 内缩 `th/2` 的盒子，
+   但**圆角半径没有同步减 `th/2`**，且 PIL 的 `width` 只朝盒子内侧画；角部描边中心线
+   偏离主体轮廓 5px。改为「外框(+th/2, 半径 r+th/2) 减 内框(-th/2, 半径 r-th/2)」
+   的同心环形差分，中心线严格落在主体轮廓；`BorderSizePixel` 也从直角 `rectangle`
+   改成同样的环形。
+3. 文字按 `asc+desc` 行盒 + PIL 默认 `la`（ascender）锚点定位，不同字体的 leading
+   与 Roblox 行高不一致；改为 `anchor="ls"` 基线绘制 + 用 `getbbox(..., anchor="ls")`
+   的 ink 边界对齐，垂直居中偏差从 +2.17 降到 -0.17。HTML 渲染器同步把
+   `box-shadow spread`（圆角会外扩）换成同心圆角描边层，`line-height` 由 1.2 改 1。
+
+排查手法：`python3 scripts/check_render_precision.py --json --strict`，直接量测
+角部 45° 射线上的描边中心线偏移、直边内缩量、主体 bbox 中心、文字 ink 中心。
+
+### 执行器 API 兼容层：getgenv / 存在性桩 / 只读表
+
+- **luau 的 `_G` 只读且与裸全局分离**，`getfenv(0)` 才是真正可写的全局环境表。
+  `getgenv()` 必须返回 `getfenv(0)`，否则检测脚本 `getgenv().API名` 全为 nil，
+  且 `getgenv().X = 1` 写入后裸全局看不到。lupa 下 `getfenv(0) == _G`，两者一致。
+- 存在性桩**绝不能覆盖** `loadstring` / `load` / `getfenv` / `setfenv` 等内建全局：
+  Luau 通过环境元表提供它们，`rawget(G, name) == nil` 会误判成「未注册」而用 no-op
+  覆盖，直接导致 `H.runScenario` 编译失败（且错误信息为 `nil`）。兼容层用普通查表
+  + `PROTECTED` 名单规避。
+- `debug` 在 Luau 下是只读表，不能用 `rawset` 追加方法；做法是
+  `copyTable(debug)` 复制原生方法后建可写副本，再 `override("debug", copy)`。
+- 兼容层分「语义实现」与「存在性桩」两层，支持率 373/373 指**环境探测意义上的
+  存在性覆盖**，不代表 373 个 API 都有真实副作用；文档与报告须如实标注。
+- 真实常驻脚本（`while task.wait(...) do` / `while true do`）在无头虚拟时钟里不会
+  自然终止，`--max-seconds` 默认 300 会跑非常久。这类脚本只做有限 API 断言，
+  不做完整执行回归。

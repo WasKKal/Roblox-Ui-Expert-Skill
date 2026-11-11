@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auto_libs import with_builtin_libs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = ["mock_runtime.lua", "vision.lua", "harness.lua"]
+SCRIPTS = ["mock_runtime.lua", "executor_api.lua", "vision.lua", "harness.lua"]
 
 
 def fail(msg, code=2):
@@ -165,7 +165,9 @@ def main():
 
         # 1) mock 运行时
         lua.execute(sources["mock_runtime.lua"])
-        # 2) 视觉层
+        # 2) 执行器 API 兼容层（373 个全局名，语义实现 + 存在性桩）
+        lua.execute(sources["executor_api.lua"])
+        # 3) 视觉层
         g.Vision = lua.eval("function(s) return load(s)() end")(sources["vision.lua"])
         # 3) 驱动层
         g.Harness = lua.eval("function(s) return load(s)() end")(sources["harness.lua"])

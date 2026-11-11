@@ -46,8 +46,11 @@ Roblox-Ui-Expert-Skill/
 │   ├── vision.lua            # 布局引擎 + 渲染器：算绝对矩形、结构树/ASCII、绘制列表
 │   ├── harness.lua           # 场景驱动：check/pump/tapUI/fireUI/Snapshot/StartCapture
 │   │                         #   + 报告（含 httpMisses 未注册资源诊断）
+│   ├── executor_api.lua      # 执行器 API 兼容层（373 个全局名：语义实现 + 存在性桩）
 │   ├── icons.py              # 图标资源：lucide SVG 解析 / 光栅化 / 位图缓存
 │   ├── auto_libs.py          # CLI 共用：内置 Lucide 离线桩自动注册（显式 --lib 优先）
+│   ├── check_api_support.py  # 执行器 API 支持率探针（lupa / luau 双路径）
+│   ├── check_render_precision.py  # 圆角描边 / 文字对齐几何精度自检（--strict 可用于 CI）
 │   ├── run_ui.py             # CLI（lupa/Lua 5.5 路径）：文本报告 + 断言
 │   ├── run_ui_luau.py        # CLI（真实 Luau 解释器路径）：PNG / HTML / APNG / JSON
 │   ├── render_hires.py       # 矢量 PNG 渲染（含图标）与 APNG 合成
@@ -64,12 +67,15 @@ Roblox-Ui-Expert-Skill/
 │   ├── anim_ui.lua           # 动效 UI（补间入场 + 错开延迟 + 心跳脉冲 + 扫描条 + 图标）
 │   ├── anim_scenario.lua     # 动效场景（11 条断言）
 │   ├── compat_scenario.lua   # 运行时兼容性回归（16 条断言，双参数/HSV/桩/诊断）
+│   ├── real_script_api_scenario.lua  # 真实脚本关键 API 兼容（68 条断言）
+│   ├── ui_lib_stub.lua       # 远程 UI 库通用桩（验证 loadstring 加载链）
 │   ├── delta_scenario.lua    # 真实大型库 DeltaUI 渲染自检（需外部源文件）
 │   └── lucide_stub.lua       # lucide 图标模块离线桩（CLI 自动挂载）
 └── references/
     ├── vision-api.md         # vision.lua + harness 全部 API
     ├── ui-pitfalls.md        # ≈25 条 Roblox UI 常见坑（审计清单）
-    └── runtime-notes.md      # mock 覆盖范围 · lupa 与真实 Luau 两条路径的兼容性
+    ├── runtime-notes.md      # mock 覆盖范围 · lupa 与真实 Luau 两条路径的兼容性
+    └── executor-api-list.txt # 373 个真实执行器 API 名称（支持率探针的数据源）
 ```
 
 ## 30 秒上手
@@ -234,9 +240,17 @@ countInstances / dumpWarnings / vclockNow / __HARNESS.summary`。
 | `examples/rich_scenario.lua` | **16/16**、0 错误（luau + lupa） |
 | `examples/anim_scenario.lua` | **11/11**、0 错误（luau + lupa） |
 | `examples/compat_scenario.lua`（运行时兼容性回归） | **16/16**、0 错误（luau + lupa） |
+| `examples/real_script_api_scenario.lua`（真实脚本关键 API） | **68/68**、0 错误 0 警告（luau + lupa） |
+| `scripts/check_render_precision.py --strict` | 7 项几何指标全部通过（圆角描边 / 文字对齐 / 主体落点） |
+| `scripts/check_api_support.py` / `--luau` | **373/373 · 100%**（执行器 API 存在性覆盖） |
 | `examples/delta_scenario.lua`（真实大型库 DeltaUI） | 需外部 `DeltaUI.lua`；该库顶层对执行器环境依赖较强，当前环境无法完整搭建 UI，属已知遗留项 |
 
-任何改动 `mock_runtime.lua` / `vision.lua` / `harness.lua` 后先重跑这几条；新增断言不得让既有场景失败。
+任何改动 `mock_runtime.lua` / `vision.lua` / `harness.lua` / `executor_api.lua` /
+`render_hires.py` / `render_html.py` 后先重跑这几条；新增断言不得让既有场景失败。
+
+> 两份作为兼容性样本的真实脚本是**常驻外挂脚本**（`while task.wait(...) do` 主循环），
+> 无头虚拟时钟无法自然终止，不做完整执行回归；用有限的 `real_script_api_scenario.lua`
+> 断言其依赖 API，并用 `--lib` 把远程 UI 库映射到 `examples/ui_lib_stub.lua` 验证加载链。
 
 > **渲染真实库前先记住**：`Instance.new(class, parent)` 双参数、`Color3:ToHSV()` /
 > `Color3.fromHSV()` 已内置；Lucide 的 `init.lua` CDN URL 由两个 CLI 通过

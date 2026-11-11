@@ -69,7 +69,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auto_libs import with_builtin_libs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = ["mock_runtime.lua", "vision.lua", "harness.lua"]
+SCRIPTS = ["mock_runtime.lua", "executor_api.lua", "vision.lua", "harness.lua"]
 
 # Luau 侧：base64 解码器 + loadsrc
 # 关键发现（实测）：
@@ -292,6 +292,7 @@ def main():
             LUAU_HEADER
             + ("__EMIT_STRUCTURE = true\n" if args.dump_json else "")
             + "\nloadsrc([[mock_runtime.lua]], [[%s]])\n" % mod_b64["mock_runtime.lua"]
+            + "loadsrc([[executor_api.lua]], [[%s]])\n" % mod_b64["executor_api.lua"]
             + "Vision = loadsrc([[vision.lua]], [[%s]])\n" % mod_b64["vision.lua"]
             + "Harness = loadsrc([[harness.lua]], [[%s]])\n" % mod_b64["harness.lua"]
             + "Vision.viewport = { w = %d, h = %d }\n" % (vw, vh)

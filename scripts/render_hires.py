@@ -241,6 +241,36 @@ def _draw_image(L, op, ox, oy, w, h):
         [ox, oy, ox + w - 1, oy + h - 1], fill=(ic[0], ic[1], ic[2], _a255(ia * 0.20)))
 
 
+def _round_ring(L, box_outer, rad_outer, box_inner, rad_inner, color_rgba):
+    """沿圆角矩形轮廓画一圈同心环形描边（外框减内框），严格贴合主体轮廓。
+
+    Roblox UIStroke 默认沿形状轮廓居中绘制：外沿 +th/2、内沿 -th/2，
+    且圆角半径必须同步 ±th/2 才能与主体圆角同心。PIL 的
+    rounded_rectangle(width=..) 只朝盒子内侧画、又不调整圆角半径，
+    用于描边会让角部线条明显偏离主体轮廓（直边却基本贴合）。
+    """
+    RW, RH = L.size
+    outer = Image.new("L", (RW, RH), 0)
+    ow = box_outer[2] - box_outer[0]
+    oh = box_outer[3] - box_outer[1]
+    ImageDraw.Draw(outer).rounded_rectangle(
+        box_outer, radius=min(max(0.0, rad_outer), min(ow, oh) / 2.0), fill=255)
+    inner = Image.new("L", (RW, RH), 0)
+    iw = box_inner[2] - box_inner[0]
+    ih = box_inner[3] - box_inner[1]
+    if iw > 0 and ih > 0:
+        ImageDraw.Draw(inner).rounded_rectangle(
+            box_inner, radius=min(max(0.0, rad_inner), min(iw, ih) / 2.0), fill=255)
+    ring = ImageChops.subtract(outer, inner)
+    a = int(_clamp(color_rgba[3], 0, 255))
+    if a < 255:
+        ring = ring.point(lambda v: int(v * a / 255))
+    lay = Image.new("RGBA", (RW, RH),
+                    (color_rgba[0], color_rgba[1], color_rgba[2], 255))
+    lay.putalpha(ring)
+    return Image.alpha_composite(L, lay)
+
+
 def _draw_text(layer, op, ox, oy, w, h, S):
     text = op.get("text") or ""
     if text == "":
@@ -277,7 +307,7 @@ def _draw_text(layer, op, ox, oy, w, h, S):
         lh = asc + desc
         ls = _wrap(lines, size, bold, family, aw) if wrapped else lines
         tw = max((measure(s, size, bold, family, d) for s in ls), default=0)
-        return ls, lh, lh * len(ls), tw
+        return ls, lh, lh * len(ls), tw, f0, asc
 
     if scaled:
         # 二分求最大可容纳字号（宽/高双约束）
@@ -285,28 +315,43 @@ def _draw_text(layer, op, ox, oy, w, h, S):
         best = None
         for _ in range(18):
             mid = (lo + hi) / 2
-            ls, lh, th, tw = line_metrics(mid)
+            ls, lh, th, tw, f0, asc = line_metrics(mid)
             if tw <= aw and th <= ah:
-                best = (mid, ls, lh, th)
+                best = (mid, ls, lh, th, f0, asc)
                 lo = mid
             else:
                 hi = mid
         if best is None:
-            ls0, lh0, th0, _ = line_metrics(4.0)
-            best = (4.0, ls0, lh0, th0)
-        size, ls, lh, total_h = best
+            ls0, lh0, th0, _, f00, asc0 = line_metrics(4.0)
+            best = (4.0, ls0, lh0, th0, f00, asc0)
+        size, ls, lh, total_h, f0, asc = best
     else:
         size = base_size
-        ls, lh, total_h, _ = line_metrics(size)
+        ls, lh, total_h, _, f0, asc = line_metrics(size)
 
     xa = op.get("xa", "Left")
     ya = op.get("ya", "Top")
+
+    # 用「可见字形 ink bbox」而非字体行盒参与对齐。
+    # PIL 默认 anchor 是 "la"（ascender 顶），而不同字体的 ascender/leading
+    # 与 Roblox 的文本行高不一致，会让文字整体偏下 1~3px。改用基线 anchor
+    # "ls" 绘制，并把 ink 顶部对齐到目标位置，垂直/水平居中即精确。
+    try:
+        probe = "".join(ls) if ls else ""
+        bb = f0.getbbox(probe, anchor="ls")
+        ink_y0 = bb[1] if bb else -size * 0.8
+        ink_y1 = bb[3] if bb else size * 0.2
+    except Exception:
+        ink_y0, ink_y1 = -size * 0.8, size * 0.2
+    ink_h = max(1.0, ink_y1 - ink_y0)
+    n = max(1, len(ls))
+    total_ink_h = (n - 1) * lh + ink_h
     if ya == "Center":
-        by = ay + (ah - total_h) / 2
+        target_top = ay + (ah - total_ink_h) / 2
     elif ya == "Bottom":
-        by = ay + ah - total_h
+        target_top = ay + ah - total_ink_h
     else:
-        by = ay
+        target_top = ay
 
     fill = (tc[0], tc[1], tc[2], ta)
     for i, ln in enumerate(ls):
@@ -319,9 +364,9 @@ def _draw_text(layer, op, ox, oy, w, h, S):
             bx = ax + aw - lw
         else:
             bx = ax
-        yy = by + i * lh
+        baseline = target_top + i * lh - ink_y0
         for seg, f in runs_of(ln, size, bold, family):
-            d.text((bx, yy), seg, font=f, fill=fill)
+            d.text((bx, baseline), seg, font=f, fill=fill, anchor="ls")
             bx += d.textlength(seg, font=f)
 
 
@@ -382,8 +427,11 @@ def render_image(report, bg=(15, 17, 21), scale=2, ss=3, show_text=True):
         if RW <= 0 or RH <= 0:
             continue
 
-        ox = rx0 - x
-        oy = ry0 - y
+        # 局部原点：主体左上角 (x, y) 在裁剪层 L 内的坐标。
+        # 旧写法 (rx0 - x) 符号相反，会让所有带 stroke / border 的元素
+        # 整体偏移 ex 像素并被裁掉边角（ex>0 时才出现，故「部分」线条不贴合）。
+        ox = x - rx0
+        oy = y - ry0
         L = Image.new("RGBA", (RW, RH), (0, 0, 0, 0))
         radius = max(0.0, float(op.get("corner", 0)) * S)
         radius = min(radius, min(w, h) / 2.0)
@@ -414,24 +462,32 @@ def render_image(report, bg=(15, 17, 21), scale=2, ss=3, show_text=True):
         if op.get("image"):
             _draw_image(L, op, ox, oy, w, h)
 
-        # 3) 边框（BorderSizePixel）
+        # 3) 边框（BorderSizePixel）：Roblox 沿轮廓向内画，圆角同步内缩
         if border and float(border.get("size", 0)) > 0:
-            bs = max(1, int(round(float(border["size"]) * S)))
+            bs = max(1.0, float(border["size"]) * S)
             bc = _rgb(border.get("color"))
-            ImageDraw.Draw(L).rectangle(
-                [ox + bs / 2.0, oy + bs / 2.0, ox + w - 1 - bs / 2.0, oy + h - 1 - bs / 2.0],
-                outline=(bc[0], bc[1], bc[2], 255), width=bs)
+            L = _round_ring(
+                L,
+                [ox, oy, ox + w - 1, oy + h - 1], radius,
+                [ox + bs, oy + bs, ox + w - 1 - bs, oy + h - 1 - bs],
+                max(0.0, radius - bs),
+                (bc[0], bc[1], bc[2], 255))
 
-        # 4) 描边（UIStroke，圆角命中）
+        # 4) 描边（UIStroke）：中心线落在主体轮廓，圆角同心贴合
         if stroke:
-            th = max(1, int(round(float(stroke.get("thickness", 0)) * S)))
+            th = max(1.0, float(stroke.get("thickness", 0)) * S)
+            half = th / 2.0
             sc = (int(round(stroke.get("r", 0) * 255)),
                   int(round(stroke.get("g", 0) * 255)),
                   int(round(stroke.get("b", 0) * 255)))
             sa = _a255(float(stroke.get("a", 1)))
-            ImageDraw.Draw(L).rounded_rectangle(
-                [ox + th / 2.0, oy + th / 2.0, ox + w - 1 - th / 2.0, oy + h - 1 - th / 2.0],
-                radius=radius, outline=(sc[0], sc[1], sc[2], sa), width=th)
+            L = _round_ring(
+                L,
+                [ox - half, oy - half, ox + w - 1 + half, oy + h - 1 + half],
+                radius + half,
+                [ox + half, oy + half, ox + w - 1 - half, oy + h - 1 - half],
+                max(0.0, radius - half),
+                (sc[0], sc[1], sc[2], sa))
 
         # 5) 文本
         if show_text and op.get("text"):

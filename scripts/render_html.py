@@ -98,6 +98,12 @@ button.on { background: #2f6feb33; border-color: #2f6feb; color: #79c0ff; }
   outline: 1px solid #2b303b;
 }
 .gui { position: absolute; }
+/* UIStroke：独立的同心圆角描边层。旧做法用 box-shadow spread 向外扩，
+   圆角半径变成 corner+thickness，角部线条明显偏离主体轮廓。 */
+.gui > i.stroke {
+  position: absolute; pointer-events: none; box-sizing: border-box;
+  border-style: solid;
+}
 /* 图标：内联 SVG 填满元素，用 CSS color 着色（stroke=currentColor） */
 .gui > svg.icon {
   position: absolute; left: 0; top: 0; width: 100%; height: 100%;
@@ -189,10 +195,8 @@ function backgroundOf(op){
 
 function shadowsOf(op){
   const sh = [];
-  if(op.stroke){
-    const st = op.stroke;
-    sh.push(`0 0 0 ${st.thickness}px ${rgba(st, st.a==null?1:st.a)}`);
-  }
+  // UIStroke 不再用 box-shadow spread（圆角会外扩、角部不贴合），
+  // 改由 build() 里的同心圆角描边层绘制；BorderSizePixel 本就向内画，保留 inset。
   if(op.border && op.border.size>0){
     sh.push(`inset 0 0 0 ${op.border.size}px ${rgba(op.border.color,1)}`);
   }
@@ -226,7 +230,9 @@ function mkText(op){
   sp.style.fontSize = size+'px';
   // 按 Roblox 字体名映射字重（此前完全没设 font-weight，粗体也渲染成了常规体）
   sp.style.fontWeight = /Black/.test(fname) ? '900' : (/Bold|Medium/.test(fname) ? '700' : '400');
-  sp.style.lineHeight = '1.2';
+  // Roblox 文本行高约等于 TextSize；用 1 而非 1.2，避免 flex 居中时
+  // 行盒把可见字形整体压偏 1~2px。
+  sp.style.lineHeight = '1';
   sp.style.color = rgba(op.textColor, op.textAlpha==null?1:op.textAlpha);
   sp.style.whiteSpace = op.wrapped ? 'pre-wrap' : 'pre';
   sp.style.wordBreak = op.wrapped ? 'break-word' : 'normal';
@@ -255,6 +261,21 @@ function build(){
     if(bg!=='transparent') st.background = bg;
     if(op.corner>0) st.borderRadius = op.corner+'px';
     const sh = shadowsOf(op); if(sh) st.boxShadow = sh;
+    // 同心圆角描边：伪层每边外扩 th/2、border 向内画 th，
+    // 中心线正好落在主体轮廓；圆角半径同步 +th/2 与主体同心。
+    if(op.stroke && op.stroke.thickness>0){
+      const th = op.stroke.thickness;
+      const ring = document.createElement('i');
+      ring.className = 'stroke';
+      ring.style.left = (-th/2)+'px';
+      ring.style.top = (-th/2)+'px';
+      ring.style.width = (op.w+th)+'px';
+      ring.style.height = (op.h+th)+'px';
+      ring.style.borderRadius = Math.max(0,(op.corner||0)+th/2)+'px';
+      ring.style.borderWidth = th+'px';
+      ring.style.borderColor = rgba(op.stroke, op.stroke.a==null?1:op.stroke.a);
+      el.appendChild(ring);
+    }
     if(op.image){
       const nm = op.imageRef ? REF2NAME[op.imageRef] : null;
       const frag = nm ? ICONS[nm] : null;

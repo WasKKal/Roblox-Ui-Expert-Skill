@@ -19,7 +19,9 @@ render_hires.py — 用矢量方式把引擎绘制列表渲染成【清晰】的
 """
 
 import io
+import math
 import os
+import re
 from PIL import Image, ImageDraw, ImageFont, ImageChops
 
 try:
@@ -30,10 +32,27 @@ except Exception:                   # pragma: no cover
 # 拉丁字形用 Roblox 同源字体（Source Sans 3 ≈ Enum.Font.SourceSans，Inter ≈ Gotham），
 # 中文（CJK）回退到 Noto Sans CJK（Roblox 本身也没有 CJK 字形，由引擎回退）
 _ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts")
-_ROBLOX_FONTS = {
-    "sans": os.path.join(_ASSETS, "SourceSans3-400.ttf"),
-    "inter": os.path.join(_ASSETS, "Inter-400.ttf"),
+_FONT_DIRS = [_ASSETS, "/usr/share/fonts/truetype/robloxlike"]
+_FONT_FILES = {
+    "sans": {"400": "SourceSans3-400.ttf", "600": "SourceSans3-600.ttf"},
+    "inter": {"400": "Inter-400.ttf", "600": "Inter-600.ttf"},
 }
+
+
+def _font_path(family, bold):
+    """按字重取字体文件：先找同目录的 600 字重，再退 400。"""
+    files = _FONT_FILES.get(family)
+    if not files:
+        return None
+    for key in (("600", "400") if bold else ("400",)):
+        name = files.get(key)
+        if not name:
+            continue
+        for d in _FONT_DIRS:
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return p
+    return None
 _CJK_REGULAR = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
@@ -49,9 +68,13 @@ _font_cache = {}
 
 
 def family_of(fontname):
-    """Roblox Enum.Font 名 → 字体族"""
+    """Roblox Enum.Font 名 → 字体族。
+
+    Builder Sans（Roblox 现在的默认 UI 字体）是自研字体，最接近的开源替代是 Inter；
+    Gotham / Montserrat 同属几何无衬线，也走 Inter。Source Sans / Legacy 保持同源字体。
+    """
     n = fontname or ""
-    if "Gotham" in n:
+    if ("Gotham" in n) or ("Builder" in n) or ("Montserrat" in n):
         return "inter"
     return "sans"          # SourceSans / Legacy / 其它一律用 Source Sans 3
 
@@ -62,12 +85,13 @@ def load_font(size, bold=False, family="sans"):
     if key in _font_cache:
         return _font_cache[key]
     font = None
-    if family in _ROBLOX_FONTS and os.path.exists(_ROBLOX_FONTS[family]):
+    path = _font_path(family, bold)
+    if path:
         try:
-            font = ImageFont.truetype(_ROBLOX_FONTS[family], size)   # 可变字体：一份覆盖全字重
+            font = ImageFont.truetype(path, size)
             if bold:
                 try:
-                    font.set_variation_by_axes([600])
+                    font.set_variation_by_axes([600])   # 可变字体时进一步加粗
                 except Exception:
                     pass
         except Exception:
@@ -127,87 +151,102 @@ def _a255(x):
     return int(round(_clamp(x, 0, 1) * 255))
 
 
-def _grad_strip(w, h, grad):
-    """按 UIGradient（Rotation + 关键点）生成一张 RGB 渐变图（尺寸 w×h）。"""
+def _grad_surface(w, h, grad):
+    """按 UIGradient 生成 RGBA 渐变图。
+
+    Rotation 为任意角度（0=左→右，90=上→下，顺时针），沿渐变轴做投影采样；
+    同时支持 Transparency 关键点（沿轴渐隐）与 Offset（沿轴平移）。
+    """
     kps = sorted(grad.get("kps") or [], key=lambda k: k.get("t", 0))
     if not kps:
         return None
-    rot = int(round(grad.get("rotation", 0))) % 360
     w = max(1, int(round(w)))
     h = max(1, int(round(h)))
+    rot = math.radians(float(grad.get("rotation", 0) or 0))
+    ux, uy = math.cos(rot), math.sin(rot)
+    span = abs(w * ux) + abs(h * uy)
+    if span < 1e-6:
+        span = 1.0
+    off = float(grad.get("ox", 0) or 0) * ux + float(grad.get("oy", 0) or 0) * uy
 
-    def color_at(t):
-        t = _clamp(t, 0.0, 1.0)
-        prev = kps[0]
-        for kp in kps:
-            tt = kp.get("t", 0)
-            if tt > t:
-                span = tt - prev.get("t", 0)
-                f = (t - prev.get("t", 0)) / span if span > 1e-9 else 1.0
-                return tuple(int(round(_clamp(prev[k] + (kp[k] - prev[k]) * f, 0, 1) * 255))
-                             for k in ("r", "g", "b"))
-            prev = kp
-        return tuple(int(round(_clamp(prev[k], 0, 1) * 255)) for k in ("r", "g", "b"))
+    import numpy as np
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    t = ((xx - (w - 1) / 2.0) * ux + (yy - (h - 1) / 2.0) * uy) / span + 0.5 + off
+    t = np.clip(t, 0.0, 1.0)
 
-    if rot in (0, 180):
-        strip = Image.new("RGB", (w, 1))
-        px = strip.load()
-        for x in range(w):
-            t = x / max(1, w - 1)
-            if rot == 180:
-                t = 1 - t
-            px[x, 0] = color_at(t)
-        return strip.resize((w, h))
+    ts = [float(k.get("t", 0)) for k in kps]
+    if len(ts) == 1:
+        ts = [0.0, 1.0]
+        r = np.full_like(t, float(kps[0].get("r", 0)))
+        g = np.full_like(t, float(kps[0].get("g", 0)))
+        b = np.full_like(t, float(kps[0].get("b", 0)))
     else:
-        strip = Image.new("RGB", (1, h))
-        px = strip.load()
-        for y in range(h):
-            t = y / max(1, h - 1)
-            if rot == 270:
-                t = 1 - t
-            px[0, y] = color_at(t)
-        return strip.resize((w, h))
+        r = np.interp(t, ts, [float(k.get("r", 0)) for k in kps])
+        g = np.interp(t, ts, [float(k.get("g", 0)) for k in kps])
+        b = np.interp(t, ts, [float(k.get("b", 0)) for k in kps])
 
+    tr = grad.get("tr")
+    if tr:
+        tts = [float(k.get("t", 0)) for k in tr]
+        tv = [1.0 - float(k.get("v", 0)) for k in tr]
+        a = np.interp(t, tts, tv) if len(tts) > 1 else np.full_like(t, tv[0])
+    else:
+        a = np.ones_like(t)
+
+    arr = np.dstack([
+        np.clip(r * 255.0, 0, 255).astype(np.uint8),
+        np.clip(g * 255.0, 0, 255).astype(np.uint8),
+        np.clip(b * 255.0, 0, 255).astype(np.uint8),
+        np.clip(a * 255.0, 0, 255).astype(np.uint8),
+    ])
+    return Image.fromarray(arr, "RGBA")
 
 def _wrap(lines, size, bold, family, max_w):
+    """按 Roblox 的换行语义折行：优先在空格处断，超长单词再按字符断。"""
     d = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     out = []
     for line in lines:
         if line == "":
             out.append("")
             continue
+        if max_w <= 0 or measure(line, size, bold, family, d) <= max_w:
+            out.append(line)
+            continue
         cur = ""
-        for ch in line:
-            if ch == "\n":
-                out.append(cur)
+        for word in re.findall(r"\s+|\S+", line):
+            if cur and measure(cur + word, size, bold, family, d) > max_w:
+                out.append(cur.rstrip())
                 cur = ""
-                continue
-            if cur == "" or measure(cur + ch, size, bold, family, d) <= max_w:
-                cur += ch
-            else:
-                out.append(cur)
-                cur = ch
+                word = word.lstrip()
+                if word == "":
+                    continue
+            while word and measure(cur + word, size, bold, family, d) > max_w:
+                # 单词本身超宽：逐字符塞入
+                take = ""
+                for ch in word:
+                    if cur and measure(cur + take + ch, size, bold, family, d) > max_w:
+                        break
+                    take += ch
+                if take == "":
+                    take = word[:1]
+                cur += take
+                word = word[len(take):]
+                if word:
+                    out.append(cur)
+                    cur = ""
+            cur += word
         out.append(cur)
     return out
 
-
-def _draw_image(L, op, ox, oy, w, h):
-    """把 ImageLabel / ImageButton 真正画成图标。
-
-    资源解析顺序：
-      1) Image 引用能判定为图标名（rbxasset://lucide-stub/terminal 等）→ 用本地
-         lucide SVG 经 cairosvg 光栅化，并以 ImageColor3 着色（矢量、任意尺寸清晰）
-      2) http(s) / 本地文件位图 → 解码后按元素矩形缩放
-      3) 都无法还原（如 rbxassetid:// 官方资源）→ 半透明占位块
-    """
+def _image_surface(op, w, h, S=1):
+    """把 ImageLabel / ImageButton 解码成一张 w×h 的 RGBA 图（按 ScaleType 摆放）。"""
     ref = op.get("imageRef") or ""
     ic = _rgb(op.get("imageColor") or {"r": 1, "g": 1, "b": 1})
     ia = _clamp(float(op.get("imageAlpha", 1)), 0.0, 1.0)
-    # 注意：调用处传入的 w/h 已经是「视口尺寸 × S」，不要再乘一次 S
     tw = max(1, int(round(w)))
     th = max(1, int(round(h)))
-    if ia <= 0.004 or tw <= 0 or th <= 0:
-        return
+    if ia <= 0.004:
+        return None
 
     im = None
     if _icons is not None:
@@ -228,50 +267,110 @@ def _draw_image(L, op, ox, oy, w, h):
                 except Exception:
                     im = None
 
-    if im is not None:
-        if im.size != (tw, th):
-            im = im.resize((tw, th), Image.LANCZOS)
-        if ia < 0.999:
-            im.putalpha(im.split()[3].point(lambda v: int(v * ia)))
-        L.alpha_composite(im, (int(round(ox)), int(round(oy))))
-        return
+    if im is None:
+        return None
 
-    # 回退：半透明占位（无法获取该资源像素时）
-    ImageDraw.Draw(L).rectangle(
-        [ox, oy, ox + w - 1, oy + h - 1], fill=(ic[0], ic[1], ic[2], _a255(ia * 0.20)))
+    st = (op.get("scaleType") or "Stretch")
+    tile = op.get("tile")
+    if tile:
+        st = "Tile"
+    if st == "Fit" and im.size != (tw, th):
+        k = min(tw / float(im.width), th / float(im.height))
+        nw, nh = max(1, int(round(im.width * k))), max(1, int(round(im.height * k)))
+        sm = im.resize((nw, nh), Image.LANCZOS)
+        im = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        im.alpha_composite(sm, ((tw - nw) // 2, (th - nh) // 2))
+    elif st == "Crop" and im.size != (tw, th):
+        k = max(tw / float(im.width), th / float(im.height))
+        nw, nh = max(1, int(round(im.width * k))), max(1, int(round(im.height * k)))
+        sm = im.resize((nw, nh), Image.LANCZOS)
+        left, top = (nw - tw) // 2, (nh - th) // 2
+        im = sm.crop((left, top, left + tw, top + th))
+    elif st == "Tile":
+        tw0 = int(round(float((tile or {}).get("w", 0)) * S)) if tile else tw
+        th0 = int(round(float((tile or {}).get("h", 0)) * S)) if tile else th
+        tw0 = max(1, tw0)
+        th0 = max(1, th0)
+        sm = im.resize((tw0, th0), Image.LANCZOS)
+        canvas = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        for yy in range(0, th, th0):
+            for xx in range(0, tw, tw0):
+                canvas.alpha_composite(sm, (xx, yy))
+        im = canvas
+    elif im.size != (tw, th):
+        im = im.resize((tw, th), Image.LANCZOS)
+
+    if ia < 0.999:
+        im.putalpha(im.split()[3].point(lambda v: int(v * ia)))
+    return im
 
 
-def _round_ring(L, box_outer, rad_outer, box_inner, rad_inner, color_rgba):
-    """沿圆角矩形轮廓画一圈同心环形描边（外框减内框），严格贴合主体轮廓。
+def _ellipsize(line, size, bold, family, d, max_w):
+    ell = "\u2026"
+    if measure(ell, size, bold, family, d) > max_w:
+        return ""
+    lo, hi = 0, len(line)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if measure(line[:mid] + ell, size, bold, family, d) <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return line[:lo].rstrip() + ell
 
-    Roblox UIStroke 默认沿形状轮廓居中绘制：外沿 +th/2、内沿 -th/2，
-    且圆角半径必须同步 ±th/2 才能与主体圆角同心。PIL 的
-    rounded_rectangle(width=..) 只朝盒子内侧画、又不调整圆角半径，
-    用于描边会让角部线条明显偏离主体轮廓（直边却基本贴合）。
+
+def _font_stack(op):
+    fontname = op.get("font") or ""
+    bold = ("Bold" in fontname) or ("Black" in fontname)
+    return bold, family_of(fontname)
+
+
+def _text_layout(op, S, avail_w, avail_h):
+    """计算文本排版：返回 (字号, 行列表, 行高, 总高, 最宽行宽)。
+
+    行高按 Roblox 的 TextSize*1.2 处理（与 mock 的 TextBounds 估算一致），
+    TextScaled 时在 [MinTextSize, MaxTextSize] 内二分求最大可容纳字号。
     """
-    RW, RH = L.size
-    outer = Image.new("L", (RW, RH), 0)
-    ow = box_outer[2] - box_outer[0]
-    oh = box_outer[3] - box_outer[1]
-    ImageDraw.Draw(outer).rounded_rectangle(
-        box_outer, radius=min(max(0.0, rad_outer), min(ow, oh) / 2.0), fill=255)
-    inner = Image.new("L", (RW, RH), 0)
-    iw = box_inner[2] - box_inner[0]
-    ih = box_inner[3] - box_inner[1]
-    if iw > 0 and ih > 0:
-        ImageDraw.Draw(inner).rounded_rectangle(
-            box_inner, radius=min(max(0.0, rad_inner), min(iw, ih) / 2.0), fill=255)
-    ring = ImageChops.subtract(outer, inner)
-    a = int(_clamp(color_rgba[3], 0, 255))
-    if a < 255:
-        ring = ring.point(lambda v: int(v * a / 255))
-    lay = Image.new("RGBA", (RW, RH),
-                    (color_rgba[0], color_rgba[1], color_rgba[2], 255))
-    lay.putalpha(ring)
-    return Image.alpha_composite(L, lay)
+    text = op.get("text") or ""
+    bold, family = _font_stack(op)
+    base_size = max(1.0, float(op.get("textSize", 14)) * S)
+    wrapped = bool(op.get("wrapped"))
+    scaled = bool(op.get("scaled"))
+    raw_lines = text.split("\n")
+    d = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+    def metrics(size):
+        ls = _wrap(raw_lines, size, bold, family, avail_w) if wrapped else raw_lines
+        lh = size * 1.2
+        bw = 0.0
+        for ln in ls:
+            ww = measure(ln, size, bold, family, d)
+            if ww > bw:
+                bw = ww
+        return ls, lh, lh * len(ls), bw
+
+    if scaled:
+        lo = max(1.0, float(op.get("minTextSize", 1)) * S)
+        hi = min(base_size, float(op.get("maxTextSize", 400)) * S)
+        if hi < lo:
+            hi = lo
+        best = None
+        for _ in range(18):
+            mid = (lo + hi) / 2.0
+            ls, lh, th, bw = metrics(mid)
+            if bw <= avail_w + 0.01 and th <= avail_h + 0.01:
+                best = (mid, ls, lh, th, bw)
+                lo = mid
+            else:
+                hi = mid
+        if best is None:
+            s0, lh0, th0, bw0 = metrics(max(1.0, lo))
+            best = (max(1.0, lo), s0, lh0, th0, bw0)
+        return best
+    return (base_size,) + metrics(base_size)
 
 
-def _draw_text(layer, op, ox, oy, w, h, S):
+def _draw_text(layer, op, ox, oy, w, h, S, layout=None):
     text = op.get("text") or ""
     if text == "":
         return
@@ -289,85 +388,71 @@ def _draw_text(layer, op, ox, oy, w, h, S):
     ta = _a255(op.get("textAlpha", 1))
     if ta <= 6:
         return
-    fontname = op.get("font") or ""
-    bold = ("Bold" in fontname) or ("Black" in fontname)
-    family = family_of(fontname)
-    base_size = float(op.get("textSize", 14)) * S
-    wrapped = bool(op.get("wrapped"))
-    scaled = bool(op.get("scaled"))
-    lines = text.split("\n")
+    bold, family = _font_stack(op)
+    if layout is None:
+        layout = _text_layout(op, S, aw, ah)
+    size, ls, lh, total_h, block_w = layout
     d = ImageDraw.Draw(layer)
 
-    def line_metrics(size):
-        f0 = load_font(size, bold, family)
-        try:
-            asc, desc = f0.getmetrics()
-        except Exception:
-            asc, desc = size, size * 0.25
-        lh = asc + desc
-        ls = _wrap(lines, size, bold, family, aw) if wrapped else lines
-        tw = max((measure(s, size, bold, family, d) for s in ls), default=0)
-        return ls, lh, lh * len(ls), tw, f0, asc
-
-    if scaled:
-        # 二分求最大可容纳字号（宽/高双约束）
-        lo, hi = 1.0, max(base_size, 4.0)
-        best = None
-        for _ in range(18):
-            mid = (lo + hi) / 2
-            ls, lh, th, tw, f0, asc = line_metrics(mid)
-            if tw <= aw and th <= ah:
-                best = (mid, ls, lh, th, f0, asc)
-                lo = mid
-            else:
-                hi = mid
-        if best is None:
-            ls0, lh0, th0, _, f00, asc0 = line_metrics(4.0)
-            best = (4.0, ls0, lh0, th0, f00, asc0)
-        size, ls, lh, total_h, f0, asc = best
-    else:
-        size = base_size
-        ls, lh, total_h, _, f0, asc = line_metrics(size)
+    # 基线：行盒内居中（半行距），各字体段共用同一条基线，
+    # 避免中文 fallback 字体的 ascent 更大而整体下沉。
+    f0 = load_font(size, bold, family)
+    try:
+        asc, desc = f0.getmetrics()
+    except Exception:
+        asc, desc = size * 0.8, size * 0.2
+    lead = (lh - (asc + desc)) / 2.0
 
     xa = op.get("xa", "Left")
-    ya = op.get("ya", "Top")
-
-    # 用「可见字形 ink bbox」而非字体行盒参与对齐。
-    # PIL 默认 anchor 是 "la"（ascender 顶），而不同字体的 ascender/leading
-    # 与 Roblox 的文本行高不一致，会让文字整体偏下 1~3px。改用基线 anchor
-    # "ls" 绘制，并把 ink 顶部对齐到目标位置，垂直/水平居中即精确。
-    try:
-        probe = "".join(ls) if ls else ""
-        bb = f0.getbbox(probe, anchor="ls")
-        ink_y0 = bb[1] if bb else -size * 0.8
-        ink_y1 = bb[3] if bb else size * 0.2
-    except Exception:
-        ink_y0, ink_y1 = -size * 0.8, size * 0.2
-    ink_h = max(1.0, ink_y1 - ink_y0)
-    n = max(1, len(ls))
-    total_ink_h = (n - 1) * lh + ink_h
+    ya = op.get("ya", "Center")
     if ya == "Center":
-        target_top = ay + (ah - total_ink_h) / 2
+        by = ay + (ah - total_h) / 2.0
     elif ya == "Bottom":
-        target_top = ay + ah - total_ink_h
+        by = ay + ah - total_h
     else:
-        target_top = ay
+        by = ay
 
     fill = (tc[0], tc[1], tc[2], ta)
+    stroke = op.get("textStroke")
+    truncate = op.get("truncate")
     for i, ln in enumerate(ls):
         if ln == "":
             continue
+        draw_ln = ln
         lw = measure(ln, size, bold, family, d)
+        if truncate and not op.get("wrapped") and lw > aw:
+            draw_ln = _ellipsize(ln, size, bold, family, d, aw)
+            lw = measure(draw_ln, size, bold, family, d)
         if xa == "Center":
-            bx = ax + (aw - lw) / 2
+            bx = ax + (aw - lw) / 2.0
         elif xa == "Right":
             bx = ax + aw - lw
         else:
             bx = ax
-        baseline = target_top + i * lh - ink_y0
-        for seg, f in runs_of(ln, size, bold, family):
-            d.text((bx, baseline), seg, font=f, fill=fill, anchor="ls")
-            bx += d.textlength(seg, font=f)
+        base_y = by + i * lh + lead + asc
+        runs = runs_of(draw_ln, size, bold, family)
+        if stroke and float(stroke.get("a", 0)) > 0.02:
+            sc = _rgb(stroke)
+            sa = _a255(float(stroke.get("a", 1)))
+            rr = max(1.0, size * 0.07)
+            for dx, dy in ((-rr, 0), (rr, 0), (0, -rr), (0, rr),
+                           (-rr, -rr), (rr, -rr), (-rr, rr), (rr, rr)):
+                xx = bx
+                for seg, f in runs:
+                    try:
+                        d.text((xx + dx, base_y + dy), seg, font=f,
+                               fill=(sc[0], sc[1], sc[2], sa), anchor="ls")
+                    except Exception:
+                        d.text((xx + dx, base_y + dy - asc), seg, font=f,
+                               fill=(sc[0], sc[1], sc[2], sa))
+                    xx += d.textlength(seg, font=f)
+        xx = bx
+        for seg, f in runs:
+            try:
+                d.text((xx, base_y), seg, font=f, fill=fill, anchor="ls")
+            except Exception:
+                d.text((xx, base_y - asc), seg, font=f, fill=fill)
+            xx += d.textlength(seg, font=f)
 
 
 def render_image(report, bg=(15, 17, 21), scale=2, ss=3, show_text=True):
@@ -405,13 +490,47 @@ def render_image(report, bg=(15, 17, 21), scale=2, ss=3, show_text=True):
 
         stroke = op.get("stroke")
         border = op.get("border")
-        ex = 0
+        ex = 0.0
         if stroke:
             ex = max(ex, float(stroke.get("thickness", 0)) * S)
         if border:
             ex = max(ex, float(border.get("size", 0)) * S)
+        exL = exR = exT = exB = ex
 
-        rx0, ry0, rx1, ry1 = x - ex, y - ex, x + w + ex, y + h + ex
+        # 文本可能溢出元素矩形（Roblox 不用元素矩形裁剪自身文字），预先算好外延
+        tl = None
+        if show_text and op.get("text"):
+            pad = op.get("pad")
+            aw = w - ((pad.get("l", 0) + pad.get("r", 0)) * S if pad else 0)
+            ah = h - ((pad.get("t", 0) + pad.get("b", 0)) * S if pad else 0)
+            if aw > 1 and ah > 1:
+                tl = _text_layout(op, S, aw, ah)
+                _sz, _ls, _lh, th, bw = tl
+                xa = op.get("xa", "Left")
+                ya = op.get("ya", "Center")
+                over_w = max(0.0, bw - aw)
+                # TextTruncate 会把文本裁到可用宽度内，不需要为溢出扩边
+                if op.get("truncate") and not op.get("wrapped"):
+                    over_w = 0.0
+                if over_w > 0:
+                    if xa == "Center":
+                        exL = max(exL, over_w / 2.0)
+                        exR = max(exR, over_w / 2.0)
+                    elif xa == "Right":
+                        exL = max(exL, over_w)
+                    else:
+                        exR = max(exR, over_w)
+                over_h = max(0.0, th - ah)
+                if over_h > 0:
+                    if ya == "Center":
+                        exT = max(exT, over_h / 2.0)
+                        exB = max(exB, over_h / 2.0)
+                    elif ya == "Bottom":
+                        exT = max(exT, over_h)
+                    else:
+                        exB = max(exB, over_h)
+
+        rx0, ry0, rx1, ry1 = x - exL, y - exT, x + w + exR, y + h + exB
         clip = op.get("clip")
         if clip:
             rx0 = max(rx0, clip["x"] * S)
@@ -427,9 +546,7 @@ def render_image(report, bg=(15, 17, 21), scale=2, ss=3, show_text=True):
         if RW <= 0 or RH <= 0:
             continue
 
-        # 局部原点：主体左上角 (x, y) 在裁剪层 L 内的坐标。
-        # 旧写法 (rx0 - x) 符号相反，会让所有带 stroke / border 的元素
-        # 整体偏移 ex 像素并被裁掉边角（ex>0 时才出现，故「部分」线条不贴合）。
+        # 元素矩形在图层坐标系中的位置（layer 左上角 = canvas 的 (rx0, ry0)）
         ox = x - rx0
         oy = y - ry0
         L = Image.new("RGBA", (RW, RH), (0, 0, 0, 0))
@@ -442,10 +559,10 @@ def render_image(report, bg=(15, 17, 21), scale=2, ss=3, show_text=True):
         bgc = op.get("bg")
         if grad or (bgc and bgA > 0.004):
             if grad:
-                strip = _grad_strip(w, h, grad)
+                strip = _grad_surface(w, h, grad)
                 if strip is not None:
                     gl = Image.new("RGBA", (RW, RH), (0, 0, 0, 0))
-                    gl.paste(strip.convert("RGBA"), (int(round(ox)), int(round(oy))))
+                    gl.paste(strip, (int(round(ox)), int(round(oy))))
                     mask = Image.new("L", (RW, RH), 0)
                     ImageDraw.Draw(mask).rounded_rectangle(
                         [ox, oy, ox + w - 1, oy + h - 1], radius=radius, fill=255)
@@ -458,42 +575,61 @@ def render_image(report, bg=(15, 17, 21), scale=2, ss=3, show_text=True):
                     [ox, oy, ox + w - 1, oy + h - 1], radius=radius,
                     fill=(r, g, b, _a255(bgA)))
 
-        # 2) 图像 / 图标（ImageLabel、ImageButton）
+        # 2) 图像 / 图标（ImageLabel、ImageButton）：按 ScaleType 摆放，并被 UICorner 裁剪
         if op.get("image"):
-            _draw_image(L, op, ox, oy, w, h)
+            im = _image_surface(op, w, h, S)
+            if im is None:
+                ic = _rgb(op.get("imageColor") or {"r": 1, "g": 1, "b": 1})
+                ia = _clamp(float(op.get("imageAlpha", 1)), 0.0, 1.0)
+                im = Image.new("RGBA", (max(1, int(w)), max(1, int(h))),
+                               (ic[0], ic[1], ic[2], _a255(ia * 0.20)))
+            if radius > 0.5:
+                mk = Image.new("L", im.size, 0)
+                ImageDraw.Draw(mk).rounded_rectangle(
+                    [0, 0, im.width - 1, im.height - 1], radius=radius, fill=255)
+                im.putalpha(ImageChops.multiply(im.split()[3], mk))
+            dx, dy = int(round(ox)), int(round(oy))
+            if dx < 0 or dy < 0:
+                cx0, cy0 = max(0, -dx), max(0, -dy)
+                im = im.crop((cx0, cy0, im.width, im.height))
+                dx += cx0
+                dy += cy0
+            L.alpha_composite(im, (dx, dy))
 
-        # 3) 边框（BorderSizePixel）：Roblox 沿轮廓向内画，圆角同步内缩
+        # 3) 边框（BorderSizePixel）：沿圆角、画在内侧
         if border and float(border.get("size", 0)) > 0:
-            bs = max(1.0, float(border["size"]) * S)
+            bs = max(1, int(round(float(border["size"]) * S)))
             bc = _rgb(border.get("color"))
-            L = _round_ring(
-                L,
-                [ox, oy, ox + w - 1, oy + h - 1], radius,
-                [ox + bs, oy + bs, ox + w - 1 - bs, oy + h - 1 - bs],
-                max(0.0, radius - bs),
-                (bc[0], bc[1], bc[2], 255))
+            ImageDraw.Draw(L).rounded_rectangle(
+                [ox + bs / 2.0, oy + bs / 2.0, ox + w - 1 - bs / 2.0, oy + h - 1 - bs / 2.0],
+                radius=max(0.0, radius - bs / 2.0),
+                outline=(bc[0], bc[1], bc[2], 255), width=bs)
 
-        # 4) 描边（UIStroke）：中心线落在主体轮廓，圆角同心贴合
+        # 4) 描边（UIStroke）：以元素边界为中心，内外各一半
         if stroke:
-            th = max(1.0, float(stroke.get("thickness", 0)) * S)
-            half = th / 2.0
+            th = max(1, int(round(float(stroke.get("thickness", 0)) * S)))
             sc = (int(round(stroke.get("r", 0) * 255)),
                   int(round(stroke.get("g", 0) * 255)),
                   int(round(stroke.get("b", 0) * 255)))
             sa = _a255(float(stroke.get("a", 1)))
-            L = _round_ring(
-                L,
-                [ox - half, oy - half, ox + w - 1 + half, oy + h - 1 + half],
-                radius + half,
-                [ox + half, oy + half, ox + w - 1 - half, oy + h - 1 - half],
-                max(0.0, radius - half),
-                (sc[0], sc[1], sc[2], sa))
+            ImageDraw.Draw(L).rounded_rectangle(
+                [ox - th / 2.0, oy - th / 2.0, ox + w - 1 + th / 2.0, oy + h - 1 + th / 2.0],
+                radius=radius + th / 2.0, outline=(sc[0], sc[1], sc[2], sa), width=th)
 
-        # 5) 文本
+        # 5) 文本（统一基线 + 可选描边 + TextTruncate）
         if show_text and op.get("text"):
-            _draw_text(L, op, ox, oy, w, h, S)
+            _draw_text(L, op, ox, oy, w, h, S, tl)
 
-        # 6) 旋转（Roblox Rotation：绕元素中心顺时针）→ 合成到临时整幅层再旋转
+        # 6) 父级圆角裁剪（ClipsDescendants + UICorner）：裁剪区是圆角矩形
+        if clip and float(clip.get("r", 0) or 0) > 0.01:
+            mk = Image.new("L", (RW, RH), 0)
+            ImageDraw.Draw(mk).rounded_rectangle(
+                [clip["x"] * S - rx0, clip["y"] * S - ry0,
+                 (clip["x"] + clip["w"]) * S - rx0 - 1, (clip["y"] + clip["h"]) * S - ry0 - 1],
+                radius=float(clip["r"]) * S, fill=255)
+            L.putalpha(ImageChops.multiply(L.split()[3], mk))
+
+        # 7) 旋转（Roblox Rotation：绕元素中心顺时针）→ 合成到临时整幅层再旋转
         rot = float(op.get("rotation", 0) or 0)
         if abs(rot) > 0.01:
             tmp = Image.new("RGBA", canvas.size, (0, 0, 0, 0))

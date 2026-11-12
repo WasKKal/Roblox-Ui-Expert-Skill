@@ -18,6 +18,7 @@ local DECOR_CLASSES = {
     UICorner = true, UIStroke = true, UIGradient = true, UIPadding = true,
     UIListLayout = true, UIGridLayout = true, UITableLayout = true,
     UIAspectRatioConstraint = true, UISizeConstraint = true, UITextSizeConstraint = true,
+    UIScale = true,
 }
 
 -- 字体平均字宽（单位 em），仅用于估算文本像素宽
@@ -164,7 +165,7 @@ local function layoutText(inst, rect)
         local best = size
         local function fits(sz)
             local e = fontEm(enumName(inst.Font))
-            local lh = sz * 1.25
+            local lh = sz * 1.2
             if #lines * lh > rect.h + 0.01 then return false end
             for _, l in ipairs(lines) do
                 if lineWidth(l, sz, e) > availW + 0.01 then return false end
@@ -192,7 +193,7 @@ local function layoutText(inst, rect)
         size = best
     end
 
-    local lineH = size * 1.25
+    local lineH = size * 1.2
     local blockW = 0
     for _, l in ipairs(lines) do
         local w = lineWidth(l, size, em)
@@ -366,9 +367,23 @@ local function intersectClip(a, b)
     return { x = x1, y = y1, w = x2 - x1, h = y2 - y1 }
 end
 
+local function radiusOf(decor, rect)
+    local corner = findDecor(decor, "UICorner")
+    if not corner then return 0 end
+    local cr = corner.CornerRadius
+    if type(cr) ~= "table" then return 0 end
+    local r = (cr.Scale or 0) * math.min(rect.w, rect.h) + (cr.Offset or 0)
+    local lim = math.min(rect.w, rect.h) / 2
+    if r > lim then r = lim end
+    if r < 0 then r = 0 end
+    return r
+end
+
 -- 递归布局：把结果写入 inst._vrect 并收集绘制条目
 -- parentRect = 父级矩形；preset = UIListLayout 预先算好的矩形（存在则跳过重算）
-local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, preset, groupAlpha, parentVisible)
+-- us = 祖先 UIScale 的累积系数（UIScale 缩放整个子树，Offset 也要跟着缩放）
+local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, preset, groupAlpha, parentVisible, us)
+    us = us or 1
     local decor, kids = splitChildren(inst)
 
     -- Visible 沿树向下传递：父级不可见 ⇒ 整棵子树都不渲染（与真实 Roblox 一致）。
@@ -383,10 +398,10 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
         local size = inst.Size
         local ap = inst.AnchorPoint or { X = 0, Y = 0 }
         local pw, ph = parentRect.w, parentRect.h
-        local x = parentRect.x + (pos.X.Scale or 0) * pw + (pos.X.Offset or 0)
-        local y = parentRect.y + (pos.Y.Scale or 0) * ph + (pos.Y.Offset or 0)
-        local w = (size.X.Scale or 0) * pw + (size.X.Offset or 0)
-        local h = (size.Y.Scale or 0) * ph + (size.Y.Offset or 0)
+        local x = parentRect.x + (pos.X.Scale or 0) * pw + (pos.X.Offset or 0) * us
+        local y = parentRect.y + (pos.Y.Scale or 0) * ph + (pos.Y.Offset or 0) * us
+        local w = (size.X.Scale or 0) * pw + (size.X.Offset or 0) * us
+        local h = (size.Y.Scale or 0) * ph + (size.Y.Offset or 0) * us
         x = x - (ap.X or 0) * w
         y = y - (ap.Y or 0) * h
         rect = { x = x, y = y, w = w, h = h }
@@ -396,6 +411,16 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
             local ew, eh = autoExtraOf(inst, rect.w, rect.h)
             if an:find("X") then rect.w = rect.w + ew end
             if an:find("Y") then rect.h = rect.h + eh end
+        end
+    end
+    -- UIScale：缩放父对象自身与整棵子树，原点为对象左上角（AbsolutePosition 不动）
+    local usc = findDecor(decor, "UIScale")
+    if usc then
+        local k = usc.Scale or 1
+        if k > 0 and math.abs(k - 1) > 1e-6 then
+            rect.w = rect.w * k
+            rect.h = rect.h * k
+            us = us * k
         end
     end
     inst._vrect = rect
@@ -414,13 +439,24 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
     if inst.ClassName == "ScrollingFrame" then
         local cp = inst.CanvasPosition or { X = 0, Y = 0 }
         local dir = enumName(inst.ScrollingDirection)
-        if dir == "X" or dir == "XY" then childBase.x = childBase.x - (cp.X or 0) end
-        if dir == "Y" or dir == "XY" then childBase.y = childBase.y - (cp.Y or 0) end
+        if dir == "X" or dir == "XY" then childBase.x = childBase.x - (cp.X or 0) * us end
+        if dir == "Y" or dir == "XY" then childBase.y = childBase.y - (cp.Y or 0) * us end
         local clips = explicit(inst, "ClipsDescendants")
         if clips == nil then clips = true end       -- ScrollingFrame 默认裁剪
-        if clips then childClip = intersectClip(clip, rect) end
+        if clips then
+            childClip = intersectClip(clip, rect)
+            local r = radiusOf(decor, rect)
+            if r > 0 then
+                childClip.r = math.min(r, math.min(childClip.w, childClip.h) / 2)
+            end
+        end
     elseif inst.ClipsDescendants then
         childClip = intersectClip(clip, rect)
+        -- 父级同时有 UICorner 时，裁剪区是圆角矩形（子级应被圆角裁掉）
+        local r = radiusOf(decor, rect)
+        if r > 0 then
+            childClip.r = math.min(r, math.min(childClip.w, childClip.h) / 2)
+        end
     end
 
     -- CanvasGroup：GroupTransparency 影响整棵子树（向下传递）
@@ -439,8 +475,8 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
             local p = c.Position
             local s = c.Size
             local a = c.AnchorPoint or { X = 0, Y = 0 }
-            local cw = (s.X.Scale or 0) * rect.w + (s.X.Offset or 0)
-            local ch = (s.Y.Scale or 0) * rect.h + (s.Y.Offset or 0)
+            local cw = (s.X.Scale or 0) * rect.w + (s.X.Offset or 0) * us
+            local ch = (s.Y.Scale or 0) * rect.h + (s.Y.Offset or 0) * us
             -- 子级若是自动尺寸，其占位需计入内容外延（否则列表会按塌陷后的高度堆叠）
             local can = c.AutomaticSize and enumName(c.AutomaticSize) or "None"
             if can and can ~= "None" then
@@ -449,8 +485,8 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
                 if can:find("Y") then ch = ch + eh end
             end
             presets[c] = {
-                x = rect.x + (p.X.Scale or 0) * rect.w + (p.X.Offset or 0) - (a.X or 0) * cw,
-                y = rect.y + (p.Y.Scale or 0) * rect.h + (p.Y.Offset or 0) - (a.Y or 0) * ch,
+                x = rect.x + (p.X.Scale or 0) * rect.w + (p.X.Offset or 0) * us - (a.X or 0) * cw,
+                y = rect.y + (p.Y.Scale or 0) * rect.h + (p.Y.Offset or 0) * us - (a.Y or 0) * ch,
                 w = cw, h = ch,
             }
         end
@@ -468,7 +504,7 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
     end)
     for i, e in ipairs(order) do
         layoutObject(e.inst, childBase, childClip, depth + 1, out, i == #order,
-            presets and presets[e.inst] or nil, groupAlpha, selfVisible)
+            presets and presets[e.inst] or nil, groupAlpha, selfVisible, us)
     end
 end
 
@@ -503,7 +539,7 @@ function Vision.computeLayout()
             return a.idx < b.idx
         end)
         for i, e in ipairs(order) do
-            layoutObject(e.inst, rect, nil, 1, entries, i == #order, nil, 1, true)
+            layoutObject(e.inst, rect, nil, 1, entries, i == #order, nil, 1, true, 1)
         end
         result[#result + 1] = { gui = g, rect = rect, entries = entries }
     end
@@ -1321,6 +1357,8 @@ function Vision.buildDrawList()
                         and ((ts.Y and (ts.Y.Offset or 0)) or 0) > 0 then
                         op.tile = { w = ts.X.Offset, h = ts.Y.Offset }
                     end
+                    local st = inst.ScaleType
+                    if st ~= nil then op.scaleType = enumName(st) end
                 end
                 if isText then
                     local tc = inst.TextColor3 or { R = 1, G = 1, B = 1 }
@@ -1335,6 +1373,15 @@ function Vision.buildDrawList()
                     op.ya = enumName(inst.TextYAlignment) or "Top"
                     op.wrapped = inst.TextWrapped and true or false
                     op.scaled = inst.TextScaled and true or false
+                    if inst.TextTruncate ~= nil then
+                        local trn = enumName(inst.TextTruncate)
+                        if trn ~= "None" and trn ~= "nil" then op.truncate = trn end
+                    end
+                    local tsc = findDecor(e.decor, "UITextSizeConstraint")
+                    if tsc then
+                        op.minTextSize = tsc.MinTextSize or 1
+                        op.maxTextSize = tsc.MaxTextSize or 100
+                    end
                     -- 文字描边（Roblox TextStrokeTransparency<1 时生效）
                     local tsA = 1 - (inst.TextStrokeTransparency or 1)
                     if tsA > 0.02 then

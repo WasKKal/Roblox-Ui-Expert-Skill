@@ -141,8 +141,6 @@ Roblox 侧同步补齐：`Color3.fromHex/toHex`、`game:IsLoaded()` / `game.Load
 
 ## 🅱️ Delta 执行器环境
 
-不同执行器对全局环境的处理并不一致。`delta_mock.txt`（红蓝对抗 / 复杂脚本验证用）刻画的 Delta 指纹是：**`_G` 是 0 字段空共享表（或 nil），`getgenv()` 返回独立的 `REAL_ENV` 代理，而不是 `_G`**；`getfenv` / `getrenv` 还有多种形态。把「`getgenv().X` 等价于 `_G.X`」当常识写的库，在 Delta 上会读到空值。
-
 `scripts/delta_env.lua` 把这些特征做成**可选环境层**，由 `--delta-mode` 在所有引擎模块加载完之后注入（工具内部靠裸全局名共享，不依赖 `_G`，因此替换 `_G` 不会破坏渲染引擎）：
 
 | Delta 特征 | 普通执行器环境 | Delta 模拟 |
@@ -177,14 +175,6 @@ python3 scripts/run_ui.py --scenario examples/delta_env_scenario.lua \
 | `getrenv_nil` | 空表 | 缺失 | → 空 `_G` | → nil |
 | `G_nil` | **nil** | → REAL_ENV | → REAL_ENV | 未定义 |
 
-**DeltaUI 遗留项已解决**：此前 `examples/delta_scenario.lua` 只有 3/12 通过、`countInstances()=0`，一度被归因为「库顶层对执行器环境依赖较强」。实际根因是 `auto_libs.py` 只注册了 `@lucide-v6` 的三个 Lucide URL，而 DeltaUI 的 `LoadLucide()` 请求 `@latest` / `master` 两个 URL 全部落空，触发 4 次 `task.wait(0.3)` 重试，把顶层 UI 构建（约第 4882 行）拖到 `pump(2.0)` 之外——**编译成功但零实例、零报错的静默失败**。补齐 URL 后：
-
-| 指标 | 修复前 | 修复后 |
-| --- | --- | --- |
-| 实例数 / ScreenGui | `0 / 0` | **`638 / 1`** |
-| 结构断言（`delta_scenario.lua`） | `3/12` | **`12/12`**；带 `--delta-mode` 为 **`19/19`**（双路径） |
-| 高清渲染 | 空画布 | **73 draws / 9 Tween / 0 错误 0 警告** |
-
 新增的 7 条 Delta 断言验证了一个可观测指纹：DeltaUI 顶层把整套 UI 写进它看到的 `_G`（经 shim 绑定为 `getfenv()` = `REAL_ENV`），`getgenv().__DeltaUI_screenGui` 有值，而**共享 `_G` 仍是空表**。预览服务的 DeltaUI 示例也提供模式下拉框（`?mode=` / `?snap=1`）。
 
 > 诚实边界：`getfenv_err` / `no_getfenv` 等模式下，依赖 `getfenv()` 的库会按真实 Delta 变体那样加载失败——这正是差分验证要暴露的差异，不是工具缺陷。luau 的 `_G` 为只读表，无法完全置空；`apply()` 逐项 `pcall` 降级并在 `[delta-sim]` / `DeltaEnv.report()` 中如实标注该运行时下不可用的特征。
@@ -218,4 +208,4 @@ python3 scripts/run_ui.py --scenario examples/delta_env_scenario.lua \
 
 ---
 
-<p align="center">Made with ❤️ by RobloxUiExpert</p>
+<p align="center">Made with ❤️ by WasKKal</p>

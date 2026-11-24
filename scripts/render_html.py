@@ -203,13 +203,34 @@ function shadowsOf(op){
   return sh.join(', ');
 }
 
+function strokeExt(op){
+  const s=op.stroke;
+  if(!s || !(s.thickness>0)) return 0;
+  // 与 vision.lua / render_hires.py 保持同一套真机语义
+  return (s.applyMode==='Border') ? s.thickness : s.thickness/2;
+}
 function clipOf(op){
   const c = op.clip; if(!c) return '';
-  const rx0=Math.max(op.x,c.x), ry0=Math.max(op.y,c.y);
-  const rx1=Math.min(op.x+op.w,c.x+c.w), ry1=Math.min(op.y+op.h,c.y+c.h);
+  // 裁剪窗口 = 父级 clip 与「主体 + 描边外扩」的交集：外扩部分在 clip 内可见，
+  // 越出 clip 的部分被裁掉 —— 与真机 ClipsDescendants 一致。
+  // inset 以主体矩形为基准，负值表示允许描边向外溢出。
+  const e = strokeExt(op);
+  const rx0=Math.max(op.x-e,c.x), ry0=Math.max(op.y-e,c.y);
+  const rx1=Math.min(op.x+op.w+e,c.x+c.w), ry1=Math.min(op.y+op.h+e,c.y+c.h);
   if(rx1<=rx0 || ry1<=ry0) return 'inset(0 0 100% 0)';
   const top=ry0-op.y, left=rx0-op.x, right=(op.x+op.w)-rx1, bottom=(op.y+op.h)-ry1;
-  return `inset(${top}px ${right}px ${bottom}px ${left}px)`;
+  let s=`inset(${top}px ${right}px ${bottom}px ${left}px`;
+  const r=c.round;
+  if(r && r.r>0){
+    // 真机 ClipsDescendants + UICorner 的裁剪窗口是「圆角矩形」，
+    // 整幅背景图的方角会被父级圆角裁掉。裁剪框与该圆角矩形基本重合时，
+    // CSS inset(...) round 可直接表达；嵌套裁剪时 PNG 渲染器做精确交集。
+    const q=Math.min(r.r, r.w/2, r.h/2);
+    const same=Math.abs(r.x-c.x)<1 && Math.abs(r.y-c.y)<1
+            && Math.abs(r.w-c.w)<1 && Math.abs(r.h-c.h)<1;
+    if(same && q>0) return s+` round ${q}px)`;
+  }
+  return s+')';
 }
 
 function mkText(op){
@@ -261,17 +282,21 @@ function build(){
     if(bg!=='transparent') st.background = bg;
     if(op.corner>0) st.borderRadius = op.corner+'px';
     const sh = shadowsOf(op); if(sh) st.boxShadow = sh;
-    // 同心圆角描边：伪层每边外扩 th/2、border 向内画 th，
-    // 中心线正好落在主体轮廓；圆角半径同步 +th/2 与主体同心。
+    // UIStroke.ApplyStrokeMode 真机语义：
+    //   Contextual（默认）→ 同心圆角环，中心线落在轮廓（±th/2，跟随 UICorner）
+    //   Border           → 忽略 UICorner 的直角矩形，整条落在边界外侧（-th）
+    // 旧实现一律按 Contextual 渲染，无法复现真机「Border 描边被裁/圆角被切平」。
     if(op.stroke && op.stroke.thickness>0){
       const th = op.stroke.thickness;
+      const isBorder = (op.stroke.applyMode==='Border');
+      const off = isBorder ? th : th/2;
       const ring = document.createElement('i');
-      ring.className = 'stroke';
-      ring.style.left = (-th/2)+'px';
-      ring.style.top = (-th/2)+'px';
-      ring.style.width = (op.w+th)+'px';
-      ring.style.height = (op.h+th)+'px';
-      ring.style.borderRadius = Math.max(0,(op.corner||0)+th/2)+'px';
+      ring.className = 'stroke' + (isBorder ? ' stroke-border' : '');
+      ring.style.left = (-off)+'px';
+      ring.style.top = (-off)+'px';
+      ring.style.width = (op.w+2*off)+'px';
+      ring.style.height = (op.h+2*off)+'px';
+      ring.style.borderRadius = isBorder ? '0px' : Math.max(0,(op.corner||0)+th/2)+'px';
       ring.style.borderWidth = th+'px';
       ring.style.borderColor = rgba(op.stroke, op.stroke.a==null?1:op.stroke.a);
       el.appendChild(ring);

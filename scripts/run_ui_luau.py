@@ -309,6 +309,10 @@ def main():
                   mod_b64[DELTA_ENV_SCRIPT]) if args.delta_mode else "")
             + "Vision.viewport = { w = %d, h = %d }\n" % (vw, vh)
             + "Vision.cell = { w = 8, h = 16 }\n"
+            # 真机里 Camera.ViewportSize 与 ScreenGui 尺寸恒等；无头环境默认固定
+            # 800x600，会让库里以 viewport() 定位的纯 offset 窗口偏离渲染视口。
+            # 把两者对齐，模拟结果才与真机一致。
+            + "workspace.CurrentCamera.ViewportSize = Vector2.new(%d, %d)\n" % (vw, vh)
             + "\n".join(reg_lines) + "\n"
             + capture_line
             + "Harness.runScenario(b64decode([[%s]]), [[%s]], { maxSeconds = %s })\n"
@@ -343,6 +347,35 @@ def main():
         if args.dump_json:
             with open(args.dump_json, "w", encoding="utf-8") as f:
                 json.dump(rep, f, ensure_ascii=False)
+
+        # 描边风险诊断：ApplyStrokeMode.Border 在真机会忽略圆角画直角描边、
+        # 且外扩部分会被父级 ClipsDescendants 裁掉（旧渲染器不模拟，只能靠实机发现）。
+        _sc = [d for d in (rep.get("draws") or []) if d.get("strokeClip")]
+        if _sc:
+            print("[run_ui_luau] 描边风险告警 %d 处（真机 ApplyStrokeMode.Border 会导致边缘异常）"
+                  % len(_sc))
+            for d in _sc[:8]:
+                c = d["strokeClip"]
+                why = ("圆角%.1f被直角描边切平" % c.get("corner", 0)) \
+                    if c.get("cornerIgnored") else "外扩描边被 ClipsDescendants 裁掉"
+                print("    %-16s %-11s %s | 裁 左%.2f 右%.2f 上%.2f 下%.2f"
+                      % (d.get("name", ""), c.get("mode", ""), why,
+                         c.get("l", 0), c.get("r", 0), c.get("t", 0), c.get("b", 0)))
+            if len(_sc) > 8:
+                print("    ...另有 %d 处" % (len(_sc) - 8))
+
+        # 圆角裁剪诊断：父级 ClipsDescendants + UICorner 会把子级裁成圆角，
+        # 旧渲染器只按矩形 clip 裁剪，整幅背景图的方角会溢出框架。
+        _rc = [d for d in (rep.get("draws") or [])
+               if (d.get("clip") or {}).get("round")]
+        if _rc:
+            print("[run_ui_luau] 圆角裁剪生效 %d 处（真机 ClipsDescendants+UICorner，背景不再溢出方角）"
+                  % len(_rc))
+            for d in _rc[:5]:
+                r = d["clip"]["round"]
+                print("    %-16s 圆角r=%.1f @ (%.0f,%.0f %.0fx%.0f)"
+                      % (d.get("name", ""), r.get("r", 0), r.get("x", 0),
+                         r.get("y", 0), r.get("w", 0), r.get("h", 0)))
 
         frames = rep.get("frames") or []
         if frames:

@@ -83,8 +83,26 @@ python3 scripts/preview_server.py --port 8765
 | 输出 | 文本报告 / 结构树 / ASCII / PNG / HTML / APNG | `scripts/run_ui.py`、`scripts/run_ui_luau.py` |
 | 兼容 | 执行器 API 兼容层、内置 Lucide 离线桩自动注册 | `scripts/executor_api.lua`、`scripts/auto_libs.py` |
 | Delta 环境 | `_G` 空表 / 独立 `REAL_ENV` / 9 模式矩阵 / `DBG_SNAP` | `scripts/delta_env.lua`、`scripts/delta_modes.py` |
-| 自检 | 渲染几何精度、执行器 API 支持率、Delta 环境差分、真实脚本 API 兼容 | `scripts/check_render_precision.py`、`scripts/check_api_support.py`、`scripts/check_delta_env.py`、`examples/real_script_api_scenario.lua` |
+| 自检 | 渲染几何精度、执行器 API 支持率、Delta 环境差分、真实脚本 API 兼容、Roblox 行为保真、UIScale 等比缩放 | `scripts/check_render_precision.py`、`scripts/check_api_support.py`、`scripts/check_delta_env.py`、`examples/real_script_api_scenario.lua`、`examples/fidelity_scenario.lua`、`examples/scale_fidelity_scenario.lua` |
 | 交互 | 命中测试 / 点击重放 / 预览服务 | `scripts/preview_server.py` |
+
+## 🧪 Roblox 行为保真
+
+汇总历史 UI 库迭代中反复踩坑、现已按真机语义对齐的 mock 差异，全部由 `examples/fidelity_scenario.lua` 固化为回归（**37/37**，lupa 与真实 luau 结果完全一致）：
+
+| 保真点 | 修复前 | 修复后（真机语义） |
+| --- | --- | --- |
+| `HttpService:JSONEncode` | 方法自吞 `self`，冒号调用把服务表本身序列化 | 冒号 / 点调用都只序列化传入参数；`JSONDecode` 同理 |
+| `math.sign/lerp/map/log2` | 缺失或 lupa/luau 行为不一 | 两条路径一致，`log2` 经 stdlib 代理注入兼容 luau 只读表 |
+| `table.create` | lupa 内置桩返回空表，`#t == 0` | 强制按 Roblox 语义填充，`#table.create(3,0) == 3` |
+| `string.trim/startswith/endswith` | 缺失，luau 无法注入只读表 | 通过全局代理注入，双路径一致 |
+| 值类型算术 | `Vector`/`UDim`/`UDim2`/`Color3` 无法 `+ - * /` | 支持算术与 `Lerp` / `Magnitude`，标量与颜色运算合法 |
+| `task.cancel` | 缺失 | 取消运行线程报错、结束线程空操作、挂起线程可取消 |
+| `game` DataModel | 缺容器方法 | `WaitForChild` / `FindFirstChild` / `GetChildren` 按 DataModel 语义提供 |
+| `typeof` / `Color3.fromHex` / `Enum` | 部分缺失 | 返回真机一致的类型名与枚举，`TextTruncate` 等枚举组齐全 |
+| `UIScale` 等比缩放 | 只缩放几何 `Position`/`Size`，文字、圆角、描边、边框、内边距、平铺尺寸仍按原始像素绘制，导致主 Frame 缩放后内部结构与窗口比例失调 | 累积缩放系数透传到全部像素视觉属性，整棵子树一致缩放；由 `examples/scale_fidelity_scenario.lua` 固化（**8/8**） |
+
+> 这些修复让 mock 与 Roblox 真实行为一致，避免"在 mock 里能跑、上真机出错"或反向的误判。
 
 ## 📐 渲染精度
 
@@ -141,6 +159,8 @@ Roblox 侧同步补齐：`Color3.fromHex/toHex`、`game:IsLoaded()` / `game.Load
 
 ## 🅱️ Delta 执行器环境
 
+不同执行器对全局环境的处理并不一致。`delta_mock.txt`（红蓝对抗 / 复杂脚本验证用）刻画的 Delta 指纹是：**`_G` 是 0 字段空共享表（或 nil），`getgenv()` 返回独立的 `REAL_ENV` 代理，而不是 `_G`**；`getfenv` / `getrenv` 还有多种形态。把「`getgenv().X` 等价于 `_G.X`」当常识写的库，在 Delta 上会读到空值。
+
 `scripts/delta_env.lua` 把这些特征做成**可选环境层**，由 `--delta-mode` 在所有引擎模块加载完之后注入（工具内部靠裸全局名共享，不依赖 `_G`，因此替换 `_G` 不会破坏渲染引擎）：
 
 | Delta 特征 | 普通执行器环境 | Delta 模拟 |
@@ -175,6 +195,14 @@ python3 scripts/run_ui.py --scenario examples/delta_env_scenario.lua \
 | `getrenv_nil` | 空表 | 缺失 | → 空 `_G` | → nil |
 | `G_nil` | **nil** | → REAL_ENV | → REAL_ENV | 未定义 |
 
+**DeltaUI 遗留项已解决**：此前 `examples/delta_scenario.lua` 只有 3/12 通过、`countInstances()=0`，一度被归因为「库顶层对执行器环境依赖较强」。实际根因是 `auto_libs.py` 只注册了 `@lucide-v6` 的三个 Lucide URL，而 DeltaUI 的 `LoadLucide()` 请求 `@latest` / `master` 两个 URL 全部落空，触发 4 次 `task.wait(0.3)` 重试，把顶层 UI 构建（约第 4882 行）拖到 `pump(2.0)` 之外——**编译成功但零实例、零报错的静默失败**。补齐 URL 后：
+
+| 指标 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 实例数 / ScreenGui | `0 / 0` | **`638 / 1`** |
+| 结构断言（`delta_scenario.lua`） | `3/12` | **`12/12`**；带 `--delta-mode` 为 **`19/19`**（双路径） |
+| 高清渲染 | 空画布 | **73 draws / 9 Tween / 0 错误 0 警告** |
+
 新增的 7 条 Delta 断言验证了一个可观测指纹：DeltaUI 顶层把整套 UI 写进它看到的 `_G`（经 shim 绑定为 `getfenv()` = `REAL_ENV`），`getgenv().__DeltaUI_screenGui` 有值，而**共享 `_G` 仍是空表**。预览服务的 DeltaUI 示例也提供模式下拉框（`?mode=` / `?snap=1`）。
 
 > 诚实边界：`getfenv_err` / `no_getfenv` 等模式下，依赖 `getfenv()` 的库会按真实 Delta 变体那样加载失败——这正是差分验证要暴露的差异，不是工具缺陷。luau 的 `_G` 为只读表，无法完全置空；`apply()` 逐项 `pcall` 降级并在 `[delta-sim]` / `DeltaEnv.report()` 中如实标注该运行时下不可用的特征。
@@ -188,6 +216,8 @@ python3 scripts/run_ui.py --scenario examples/delta_env_scenario.lua \
 | `examples/anim_scenario.lua` | **11/11**、0 错误（luau + lupa） |
 | `examples/compat_scenario.lua` | **16/16**、0 错误（luau + lupa） |
 | `examples/real_script_api_scenario.lua` | **68/68**、0 错误 0 警告（luau + lupa） |
+| `examples/fidelity_scenario.lua` | **37/37**、0 错误（Roblox 行为保真，luau + lupa 结果一致） |
+| `examples/scale_fidelity_scenario.lua` | **8/8**、0 错误（UIScale 等比缩放，luau + lupa 结果一致） |
 | `examples/delta_scenario.lua`（真实库 DeltaUI） | **12/12**（普通环境）/ **19/19**（`--delta-mode getfenv_real`），0 错误（luau + lupa） |
 | `examples/delta_env_scenario.lua` | **106/106**、0 错误（9 模式语义差分，单次运行） |
 | `scripts/check_delta_env.py` | **18/18**（9 模式 × lupa/luau） |
@@ -208,4 +238,4 @@ python3 scripts/run_ui.py --scenario examples/delta_env_scenario.lua \
 
 ---
 
-<p align="center">Made with ❤️ by WasKKal</p>
+<p align="center">Made with ❤️ by RobloxUiExpert</p>

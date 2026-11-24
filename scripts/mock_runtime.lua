@@ -63,6 +63,63 @@ safeSet(math, "clamp", function(x, lo, hi)
     if x > hi then return hi end
     return x
 end)
+safeSet(math, "sign", function(x) return x > 0 and 1 or (x < 0 and -1 or 0) end)
+safeSet(math, "lerp", function(a, b, t) return a + (b - a) * t end)
+safeSet(math, "map", function(x, inMin, inMax, outMin, outMax)
+    if inMax == inMin then return outMin end
+    return outMin + (x - inMin) * (outMax - outMin) / (inMax - inMin)
+end)
+-- Luau 的标准库表是只读的（safeSet 写入会被静默跳过），且官方 Luau 并不原生提供
+-- math.log2 / string.trim。为了让 mock 的两条执行路径（lupa 与真实 luau）行为一致，
+-- 用「复制整表 + 追加字段 + 替换全局」的方式注入；lupa 下同样成立。
+local function patchStdlib(name, fields)
+    local env = getfenv and getfenv(0) or _G
+    local src = env[name]
+    if type(src) ~= "table" then return end
+    local proxy = {}
+    for k, v in pairs(src) do proxy[k] = v end
+    for k, v in pairs(fields) do
+        if src[k] == nil then proxy[k] = v end
+    end
+    local ok = pcall(function() env[name] = proxy end)
+    if not ok then pcall(function() rawset(env, name, proxy) end) end
+end
+patchStdlib("math", { log2 = function(x) return math.log(x) / math.log(2) end })
+patchStdlib("string", {
+    trim = function(s) return tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "") end,
+    startswith = function(s, prefix) return tostring(s or ""):sub(1, #prefix) == prefix end,
+    endswith = function(s, suffix) local str = tostring(s or ""); return str:sub(-#suffix) == suffix end,
+})
+safeSet(math, "round2", function(x, n)
+    local p = 10 ^ (n or 0)
+    return math.floor(x * p + 0.5) / p
+end)
+safeSet(table, "find", function(t, value, init)
+    if type(t) ~= "table" then return nil end
+    local start = init or 1
+    if start < 0 then start = #t + start + 1 end
+    for i = start, #t do
+        if t[i] == value then return i end
+    end
+    return nil
+end)
+local function tableCreate(n, fill)
+    local out = {}
+    if n and n > 0 then
+        for i = 1, n do out[i] = fill end
+    end
+    return out
+end
+safeSet(table, "create", tableCreate)
+-- Lua 5.5/lupa 可能自带一个只预分配不填值的 table.create，强制覆盖为真机语义；
+-- Luau 的表只读，pcall 失败即保留其原生（已正确）实现。
+pcall(function() table.create = tableCreate end)
+safeSet(table, "pack", function(...)
+    return { n = select("#", ...), ... }
+end)
+safeSet(table, "unpack", function(t, i, j)
+    return table.unpack(t, i or 1, j or (t and t.n or #t))
+end)
 safeSet(coroutine, "close", function(co)
     if coroutine.status(co) == "dead" then return true end
     return false
@@ -105,6 +162,7 @@ safeSet(table, "getn", function(t) return #t end)
 
 -- task 调度器状态（前向声明，供 Signal:Wait 直接入队）
 local queue, vclock
+local cancelledThreads = setmetatable({}, { __mode = "k" })
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -121,27 +179,88 @@ local function marker(t, name)
     return t
 end
 
-UDim = {}
-function UDim.new(scale, offset)
-    return marker({ Scale = scale or 0, Offset = offset or 0 }, "udim")
+-- 真机值类型支持算术运算（Vector2/Vector3/UDim/UDim2 的 + - * /）。历史 mock
+-- 的这些值是裸表，库里一旦写 `a + b` 就报 "attempt to perform arithmetic on a
+-- table value"。这里给对应元表补上按分量运算的 metamethod；布局引擎只读字段，
+-- 不受影响。
+local function installArith(mt, make, fields, scaleOnly)
+    local function num(x) return type(x) == "number" and x or 0 end
+    local function bin(opName, op)
+        return function(a, b)
+            local aNum, bNum = type(a) == "number", type(b) == "number"
+            if aNum or bNum then
+                local s = aNum and a or b
+                local v = aNum and b or a
+                local comp = {}
+                for _, f in ipairs(fields) do comp[f] = op(aNum and s or v[f], aNum and v[f] or s) end
+                return make(comp)
+            end
+            local comp = {}
+            for _, f in ipairs(fields) do comp[f] = op(num(a[f]), num(b[f])) end
+            return make(comp)
+        end
+    end
+    local function un(op)
+        return function(a)
+            local comp = {}
+            for _, f in ipairs(fields) do comp[f] = op(num(a[f])) end
+            return make(comp)
+        end
+    end
+    mt.__add = bin("add", function(x, y) return x + y end)
+    mt.__sub = bin("sub", function(x, y) return x - y end)
+    mt.__mul = bin("mul", function(x, y) return x * y end)
+    mt.__div = bin("div", function(x, y) return x / y end)
+    mt.__unm = un(function(x) return -x end)
 end
 
+UDim = {}
+local UDimMT = {}
+function UDim.new(scale, offset)
+    return setmetatable(marker({ Scale = scale or 0, Offset = offset or 0 }, "udim"), UDimMT)
+end
+installArith(UDimMT, function(c) return UDim.new(c.Scale, c.Offset) end, { "Scale", "Offset" })
+
 UDim2 = {}
+local UDim2MT = {}
 function UDim2.new(sx, ox, sy, oy)
-    return marker({ X = UDim.new(sx, ox), Y = UDim.new(sy, oy) }, "udim2")
+    return setmetatable(marker({ X = UDim.new(sx, ox), Y = UDim.new(sy, oy) }, "udim2"), UDim2MT)
 end
 function UDim2.fromScale(x, y) return UDim2.new(x or 0, 0, y or 0, 0) end
 function UDim2.fromOffset(x, y) return UDim2.new(0, x or 0, 0, y or 0) end
+UDim2MT.__add = function(a, b)
+    return UDim2.new(a.X.Scale + b.X.Scale, a.X.Offset + b.X.Offset,
+                     a.Y.Scale + b.Y.Scale, a.Y.Offset + b.Y.Offset)
+end
+UDim2MT.__sub = function(a, b)
+    return UDim2.new(a.X.Scale - b.X.Scale, a.X.Offset - b.X.Offset,
+                     a.Y.Scale - b.Y.Scale, a.Y.Offset - b.Y.Offset)
+end
+UDim2MT.__mul = function(a, b)
+    local s = type(b) == "number" and b or (type(a) == "number" and a or 1)
+    local v = type(b) == "number" and a or b
+    return UDim2.new(v.X.Scale * s, v.X.Offset * s, v.Y.Scale * s, v.Y.Offset * s)
+end
+UDim2MT.__div = function(a, b)
+    if type(b) ~= "number" or b == 0 then return a end
+    return UDim2.new(a.X.Scale / b, a.X.Offset / b, a.Y.Scale / b, a.Y.Offset / b)
+end
 
 Vector2 = {}
+local Vector2MT = {}
+Vector2MT.__index = Vector2MT
 function Vector2.new(x, y)
-    return marker({ X = x or 0, Y = y or 0 }, "vector2")
+    return setmetatable(marker({ X = x or 0, Y = y or 0 }, "vector2"), Vector2MT)
 end
+installArith(Vector2MT, function(c) return Vector2.new(c.X, c.Y) end, { "X", "Y" })
 
 Vector3 = {}
+local Vector3MT = {}
+Vector3MT.__index = Vector3MT
 function Vector3.new(x, y, z)
-    return marker({ X = x or 0, Y = y or 0, Z = z or 0 }, "vector3")
+    return setmetatable(marker({ X = x or 0, Y = y or 0, Z = z or 0 }, "vector3"), Vector3MT)
 end
+installArith(Vector3MT, function(c) return Vector3.new(c.X, c.Y, c.Z) end, { "X", "Y", "Z" })
 
 Color3 = {}
 local Color3MT = {}
@@ -214,6 +333,38 @@ end
 function Color3.toHex(c)
     local r, g, b = Color3.toRGB(c)
     return string.format("#%02X%02X%02X", r, g, b)
+end
+function Color3MT:Lerp(b, t)
+    return Color3.lerp(self, b, t)
+end
+local function colorBin(op)
+    return function(a, b)
+        local aNum, bNum = type(a) == "number", type(b) == "number"
+        if aNum or bNum then
+            local s = aNum and a or b
+            local v = aNum and b or a
+            if type(v) ~= "table" then error("Color3 运算需要 Color3 或 number") end
+            return Color3.new(op(v.R or 0, s), op(v.G or 0, s), op(v.B or 0, s))
+        end
+        return Color3.new(op(a.R or 0, b.R or 0), op(a.G or 0, b.G or 0), op(a.B or 0, b.B or 0))
+    end
+end
+Color3MT.__add = colorBin(function(x, y) return x + y end)
+Color3MT.__sub = colorBin(function(x, y) return x - y end)
+Color3MT.__mul = colorBin(function(x, y) return x * y end)
+Color3MT.__div = colorBin(function(x, y) return x / y end)
+
+function Vector2MT:Lerp(b, t)
+    return Vector2.new(self.X + (b.X - self.X) * t, self.Y + (b.Y - self.Y) * t)
+end
+function Vector2MT:Magnitude()
+    return math.sqrt(self.X * self.X + self.Y * self.Y)
+end
+function Vector3MT:Lerp(b, t)
+    return Vector3.new(self.X + (b.X - self.X) * t, self.Y + (b.Y - self.Y) * t, self.Z + (b.Z - self.Z) * t)
+end
+function Vector3MT:Magnitude()
+    return math.sqrt(self.X * self.X + self.Y * self.Y + self.Z * self.Z)
 end
 
 ColorSequenceKeypoint = {}
@@ -965,6 +1116,7 @@ task = {}
 
 local function runQueued(entry)
     local co = entry.co
+    if cancelledThreads[co] then return end
     local ok, a, b = coroutine.resume(co, table.unpack(entry.args or {}))
     if not ok then
         M.onCoroutineError(tostring(a))
@@ -997,6 +1149,22 @@ end
 
 function task.defer(fn, ...)
     task.delay(0, fn, ...)
+end
+
+-- 真机语义：task.cancel(当前正在运行的线程) 会抛 "Cannot cancel thread"；
+-- 取消一个已经结束的线程是空操作；取消排队/挂起中的线程则让它不再被调度。
+function task.cancel(thread)
+    if type(thread) ~= "thread" then return end
+    local st = coroutine.status(thread)
+    if st == "running" or thread == coroutine.running() then
+        error("Cannot cancel thread", 2)
+    end
+    cancelledThreads[thread] = true
+    if st == "suspended" or st == "normal" then
+        for i = #queue, 1, -1 do
+            if queue[i].co == thread then table.remove(queue, i) end
+        end
+    end
 end
 
 function task.delay(t, fn, ...)
@@ -1197,14 +1365,25 @@ local function jsonDecode(s)
     return v
 end
 
-local HttpService = {
-    JSONEncode = jsonEncode,
-    JSONDecode = jsonDecode,
-    JSONEncode2 = jsonEncode,
-    GenerateGUID = function() return "mock-guid" end,
-    UrlEncode = function(_, s) return s end,
-    GetAsync = function() return "" end,
-}
+-- 真机的 HttpService 方法是「自吞 self」的：无论 `HS:JSONEncode(x)` 还是
+-- `HS.JSONEncode(x)` 调用，都只处理真正的数据参数。历史 mock 把普通函数直接
+-- 挂到表上，`HS:JSONEncode(x)` 会把 HS 表当成第一个参数编码，产出整张服务表
+-- 的垃圾 JSON（卡密 / HTTP 回调场景反复踩坑）。这里统一做 self 吞并。
+local HttpService = {}
+local function hsMethod(fn)
+    return function(a, b, ...)
+        if a == HttpService then return fn(b, ...) end
+        return fn(a, b, ...)
+    end
+end
+HttpService.JSONEncode = hsMethod(jsonEncode)
+HttpService.JSONDecode = hsMethod(jsonDecode)
+HttpService.JSONEncode2 = hsMethod(jsonEncode)
+HttpService.JSONDecode2 = hsMethod(jsonDecode)
+HttpService.GenerateGUID = hsMethod(function() return "mock-guid" end)
+HttpService.UrlEncode = hsMethod(function(s) return tostring(s or "") end)
+HttpService.GetAsync = hsMethod(function() return "" end)
+HttpService.PostAsync = hsMethod(function() return "" end)
 M.HttpService = HttpService
 
 -- ============================================================================
@@ -1469,6 +1648,28 @@ game = {
         return ""
     end,
 }
+-- DataModel 真机也支持 FindFirstChild / WaitForChild / GetChildren 等容器方法。
+-- game 的逻辑子节点就是各 service，按名字可取到，取不到静默返回 nil（与真机 WaitForChild 超时一致）。
+game.FindFirstChild = function(_, name)
+    return Services[name] or nil
+end
+game.WaitForChild = function(_, name, _timeout)
+    return Services[name] or nil
+end
+game.FindFirstChildOfClass = function(_, className)
+    for _, s in pairs(Services) do
+        if s and s.ClassName == className then return s end
+    end
+    return nil
+end
+game.GetChildren = function()
+    local out = {}
+    for _, s in pairs(Services) do out[#out + 1] = s end
+    return out
+end
+game.GetDescendants = function()
+    return game:GetChildren()
+end
 M.game = game
 
 M.frameEvent = function(name, dt, t)

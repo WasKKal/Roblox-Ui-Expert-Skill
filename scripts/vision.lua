@@ -139,11 +139,11 @@ local function wrapLine(line, size, em, availW)
 end
 
 -- 计算一段文本的排版结果：{ lines = {str...}, size = 有效字号, lineH = 行高, blockW = 宽 }
-local function layoutText(inst, rect)
+local function layoutText(inst, rect, us)
     local raw = inst.Text
     if type(raw) ~= "string" or raw == "" then return nil end
     if inst.RichText then raw = stripTags(raw) end
-    local size = inst.TextSize or 18
+    local size = (inst.TextSize or 18) * (us or 1)
     local em = fontEm(enumName(inst.Font))
     local availW = rect.w
     if availW < 4 then availW = 4 end
@@ -367,12 +367,12 @@ local function intersectClip(a, b)
     return { x = x1, y = y1, w = x2 - x1, h = y2 - y1 }
 end
 
-local function radiusOf(decor, rect)
+local function radiusOf(decor, rect, us)
     local corner = findDecor(decor, "UICorner")
     if not corner then return 0 end
     local cr = corner.CornerRadius
     if type(cr) ~= "table" then return 0 end
-    local r = (cr.Scale or 0) * math.min(rect.w, rect.h) + (cr.Offset or 0)
+    local r = ((cr.Scale or 0) * math.min(rect.w, rect.h) + (cr.Offset or 0)) * (us or 1)
     local lim = math.min(rect.w, rect.h) / 2
     if r > lim then r = lim end
     if r < 0 then r = 0 end
@@ -430,6 +430,7 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
         clip = clip, visible = selfVisible, selfVisible = (inst.Visible ~= false),
         isLastSibling = isLastSibling,
         groupAlpha = groupAlpha,
+        scale = us,
     }
     out[#out + 1] = entry
 
@@ -445,7 +446,7 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
         if clips == nil then clips = true end       -- ScrollingFrame 默认裁剪
         if clips then
             childClip = intersectClip(clip, rect)
-            local r = radiusOf(decor, rect)
+            local r = radiusOf(decor, rect, us)
             if r > 0 then
                 childClip.r = math.min(r, math.min(childClip.w, childClip.h) / 2)
             end
@@ -453,7 +454,7 @@ local function layoutObject(inst, parentRect, clip, depth, out, isLastSibling, p
     elseif inst.ClipsDescendants then
         childClip = intersectClip(clip, rect)
         -- 父级同时有 UICorner 时，裁剪区是圆角矩形（子级应被圆角裁掉）
-        local r = radiusOf(decor, rect)
+        local r = radiusOf(decor, rect, us)
         if r > 0 then
             childClip.r = math.min(r, math.min(childClip.w, childClip.h) / 2)
         end
@@ -860,7 +861,7 @@ local function prepareTexts(layout)
         for _, e in ipairs(gl.entries) do
             local inst = e.inst
             if inst.ClassName == "TextLabel" or inst.ClassName == "TextButton" then
-                e.textLayout = layoutText(inst, e.rect)
+                e.textLayout = layoutText(inst, e.rect, e.scale)
                 if e.textLayout then
                     local tl = e.textLayout
                     local availW = e.rect.w
@@ -1249,12 +1250,12 @@ local function colorOf(c)
     return { r = c.R or 0, g = c.G or 0, b = c.B or 0 }
 end
 
-local function cornerOf(decor, rect)
+local function cornerOf(decor, rect, us)
     local corner = findDecor(decor, "UICorner")
     if not corner then return 0 end
     local cr = corner.CornerRadius
     if type(cr) == "table" then
-        return (cr.Scale or 0) * math.min(rect.w, rect.h) + (cr.Offset or 0)
+        return ((cr.Scale or 0) * math.min(rect.w, rect.h) + (cr.Offset or 0)) * (us or 1)
     end
     return 0
 end
@@ -1292,25 +1293,26 @@ local function gradInfo(decor)
     return out
 end
 
-local function strokeInfo(decor, ga)
+local function strokeInfo(decor, ga, us)
     local stroke = findDecor(decor, "UIStroke")
     if not stroke or (stroke.Thickness or 0) <= 0 then return nil end
     local a = (1 - (stroke.Transparency or 0)) * ga
     if a <= 0.02 then return nil end
     local c = stroke.Color or { R = 0, G = 0, B = 0 }
     return {
-        thickness = stroke.Thickness or 0, a = a, r = c.R or 0, g = c.G or 0, b = c.B or 0,
+        thickness = (stroke.Thickness or 0) * (us or 1), a = a, r = c.R or 0, g = c.G or 0, b = c.B or 0,
         applyMode = enumName(stroke.ApplyStrokeMode) or "Contextual",
         lineJoin = enumName(stroke.LineJoinMode) or "Round",
     }
 end
 
-local function padInfo(decor)
+local function padInfo(decor, us)
     local pad = findDecor(decor, "UIPadding")
     if not pad then return nil end
+    local k = us or 1
     return {
-        l = pad.PaddingLeft.Offset, r = pad.PaddingRight.Offset,
-        t = pad.PaddingTop.Offset, b = pad.PaddingBottom.Offset,
+        l = pad.PaddingLeft.Offset * k, r = pad.PaddingRight.Offset * k,
+        t = pad.PaddingTop.Offset * k, b = pad.PaddingBottom.Offset * k,
     }
 end
 
@@ -1324,6 +1326,7 @@ function Vision.buildDrawList()
             if e.visible and e.rect.w > 0.001 and e.rect.h > 0.001 then
                 seq = seq + 1
                 local ga = e.groupAlpha or 1
+                local us = e.scale or 1
                 local cls = inst.ClassName or ""
                 local isText = (cls == "TextLabel" or cls == "TextButton" or cls == "TextBox")
                 local isImage = (cls == "ImageLabel" or cls == "ImageButton")
@@ -1335,14 +1338,14 @@ function Vision.buildDrawList()
                     rotation = inst.Rotation or 0,
                     bgAlpha = (1 - (inst.BackgroundTransparency or 0)) * ga,
                     bg = colorOf(inst.BackgroundColor3),
-                    corner = cornerOf(e.decor, e.rect),
-                    stroke = strokeInfo(e.decor, ga),
+                    corner = cornerOf(e.decor, e.rect, us),
+                    stroke = strokeInfo(e.decor, ga, us),
                     gradient = gradInfo(e.decor),
-                    pad = padInfo(e.decor),
+                    pad = padInfo(e.decor, us),
                 }
                 if (inst.BorderSizePixel or 0) > 0 then
                     op.border = {
-                        size = inst.BorderSizePixel,
+                        size = inst.BorderSizePixel * us,
                         color = colorOf(inst.BorderColor3) or { r = 0, g = 0, b = 0 },
                     }
                 end
@@ -1355,7 +1358,7 @@ function Vision.buildDrawList()
                     local ts = inst.TileSize
                     if ts and ((ts.X and (ts.X.Offset or 0)) or 0) > 0
                         and ((ts.Y and (ts.Y.Offset or 0)) or 0) > 0 then
-                        op.tile = { w = ts.X.Offset, h = ts.Y.Offset }
+                        op.tile = { w = ts.X.Offset * us, h = ts.Y.Offset * us }
                     end
                     local st = inst.ScaleType
                     if st ~= nil then op.scaleType = enumName(st) end
@@ -1367,7 +1370,7 @@ function Vision.buildDrawList()
                     op.text = txt
                     op.textColor = { r = tc.R or 0, g = tc.G or 0, b = tc.B or 0 }
                     op.textAlpha = (1 - (inst.TextTransparency or 0)) * ga
-                    op.textSize = inst.TextSize or 14
+                    op.textSize = (inst.TextSize or 14) * us
                     op.font = enumName(inst.Font) or "SourceSans"
                     op.xa = enumName(inst.TextXAlignment) or "Left"
                     op.ya = enumName(inst.TextYAlignment) or "Top"
@@ -1379,8 +1382,8 @@ function Vision.buildDrawList()
                     end
                     local tsc = findDecor(e.decor, "UITextSizeConstraint")
                     if tsc then
-                        op.minTextSize = tsc.MinTextSize or 1
-                        op.maxTextSize = tsc.MaxTextSize or 100
+                        op.minTextSize = (tsc.MinTextSize or 1) * us
+                        op.maxTextSize = (tsc.MaxTextSize or 100) * us
                     end
                     -- 文字描边（Roblox TextStrokeTransparency<1 时生效）
                     local tsA = 1 - (inst.TextStrokeTransparency or 1)

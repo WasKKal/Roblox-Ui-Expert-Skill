@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Executor%20API-373%2F373-3fb950?style=for-the-badge" alt="Executor API Coverage" />
   <img src="https://img.shields.io/badge/Delta%20Env-9%20modes-orange?style=for-the-badge" alt="Delta Env Modes" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License" />
+  [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/WasKKal/badge.svg)](https://hub.xerj.org/contributors/WasKKal)
 </p>
 
 > 一套**无头 Roblox UI 运行时 + 矢量渲染器**：用 Luau 代码构建 UI，不需要 Roblox Studio，就能拿到结构树 / ASCII 线框 / 清晰 PNG / 可交互 HTML / APNG 动画，并可直接渲染真实 UI 库与真实脚本。
